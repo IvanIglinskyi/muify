@@ -7,7 +7,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const TIMEOUT_MS = 8000;
 const MAX_CACHE_ENTRIES = 500;
 
-export type JamendoPath = "tracks" | "albums" | "albums/tracks";
+export type JamendoPath = "tracks" | "albums" | "albums/tracks" | "artists";
 export type JamendoParams = Record<string, string | number | undefined | null>;
 
 export class JamendoError extends Error {

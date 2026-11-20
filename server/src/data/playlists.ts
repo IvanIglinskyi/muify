@@ -8,10 +8,3 @@ export const playlists: Playlist[] = [
   { id: "p-meditation", name: "Meditation", kind: "builtin", trackIds: ["t10", "t11"] },
   { id: "p-walk", name: "For a Walk mix", kind: "builtin", trackIds: ["t3", "t7", "t8", "t15"] },
 ];
-
-// Base counters for the statistics block; likes are added on top of the live liked count.
-export const statsBase = {
-  totalHours: 1450,
-  likesFromOtherContent: 417,
-  tracks: 2523,
-};

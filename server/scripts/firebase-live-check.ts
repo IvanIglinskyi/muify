@@ -58,6 +58,8 @@ async function call(method: string, path: string, token?: string, body?: unknown
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const created: string[] = [];
+const createdShares: string[] = [];
+let lastShareOfA: string | undefined;
 const fb = await firebase();
 
 try {
@@ -134,12 +136,67 @@ try {
   const exp = await call("GET", "/api/me/export", A);
   check("export works", exp.status === 200 && exp.json.likedTracks.length === 1, exp.status);
 
+  // ---- real Home statistics ----
+  const statsA = await call("GET", "/api/stats", A);
+  check("stats A = own history/likes (15 s, 1 like, 1 track)", statsA.status === 200 && statsA.json.totalSeconds === 15 && statsA.json.likes === 1 && statsA.json.tracks === 1, statsA.json);
+  const statsB = await call("GET", "/api/stats", B);
+  check("stats B are empty", statsB.status === 200 && statsB.json.totalSeconds === 0 && statsB.json.likes === 0, statsB.json);
+  const statsGuest = await call("GET", "/api/stats");
+  check("stats as guest → 401", statsGuest.status === 401, statsGuest.status);
+
+  // ---- artist page ----
+  const artistId = mix.json[0]?.artistId as string | undefined;
+  if (artistId) {
+    const art = await call("GET", `/api/artists/${encodeURIComponent(artistId)}`, A);
+    check(`artist page ${artistId}`, art.status === 200 && art.json.topTracks.length > 0, art.status);
+  }
+
+  // ---- recommendations (more likes → personal mix) ----
+  for (const t of mix.json.slice(1, 4)) await call("PATCH", `/api/tracks/${encodeURIComponent(t.id)}/like`, A, { liked: true });
+  const recs = await call("GET", "/api/recommendations", A);
+  check("recommendations for A are personalised", recs.status === 200 && recs.json.dailyMix.personalised === true && recs.json.dailyMix.tracks.length >= 6, recs.json?.dailyMix?.personalised);
+  const recsGuest = await call("GET", "/api/recommendations");
+  check("guest gets the generic mix", recsGuest.json.dailyMix.personalised === false && recsGuest.json.becauseYouLiked === null);
+
+  // ---- playlist description / reorder / public link ----
+  const ids3 = mix.json.slice(0, 3).map((t: any) => t.id) as string[];
+  const pl2 = await call("POST", "/api/playlists", A, { name: "Live share test", trackIds: ids3 });
+  const desc = await call("PATCH", `/api/playlists/${pl2.json.id}`, A, { description: "Temporary test playlist" });
+  check("description saved", desc.status === 200 && desc.json.description === "Temporary test playlist", desc.json);
+  const reordered = await call("PUT", `/api/playlists/${pl2.json.id}/tracks`, A, { trackIds: [...ids3].reverse() });
+  check("reorder", reordered.status === 200 && reordered.json.trackIds.join() === [...ids3].reverse().join(), reordered.json);
+  const badOrder = await call("PUT", `/api/playlists/${pl2.json.id}/tracks`, A, { trackIds: ids3.slice(0, 2) });
+  check("reorder with a missing track → 409", badOrder.status === 409, badOrder.status);
+  const share = await call("PUT", `/api/playlists/${pl2.json.id}/share`, A);
+  const shareId = share.json.shareId as string;
+  if (shareId) createdShares.push(shareId);
+  check("share → shareId", share.status === 200 && /^[A-Za-z0-9_-]{12}$/.test(shareId ?? ""), share.json);
+  const idx = (await fb.db.get(`sharedPlaylists/${encodeKey(shareId)}`)) as any;
+  check("RTDB sharedPlaylists/{shareId} → { ownerUid, playlistId }", idx?.ownerUid === uidA && idx?.playlistId === pl2.json.id, idx);
+  const pub = await call("GET", `/api/shared/${shareId}`);
+  check("guest opens the public playlist", pub.status === 200 && pub.json.trackIds.length === 3 && pub.json.ownedByYou === false, pub.status);
+  check("public view has no email / uid", !JSON.stringify(pub.json).includes(emailA) && !JSON.stringify(pub.json).includes(uidA));
+  const pubB = await call("GET", `/api/shared/${shareId}`, B);
+  check("B opens it read-only", pubB.status === 200 && pubB.json.ownedByYou === false && pubB.json.playlistId === null, pubB.json?.ownedByYou);
+  const bEdit = await call("PUT", `/api/playlists/${pl2.json.id}/tracks`, B, { trackIds: ids3 });
+  check("B cannot reorder A's playlist (404)", bEdit.status === 404, bEdit.status);
+  const off = await call("DELETE", `/api/playlists/${pl2.json.id}/share`, A);
+  const gone = await call("GET", `/api/shared/${shareId}`);
+  check("unshare → link 404s", off.status === 200 && gone.status === 404, gone.status);
+  check("unshare → index node removed", (await fb.db.get(`sharedPlaylists/${encodeKey(shareId)}`)) === null);
+  const share2 = await call("PUT", `/api/playlists/${pl2.json.id}/share`, A);
+  if (share2.json.shareId) createdShares.push(share2.json.shareId);
+  lastShareOfA = share2.json.shareId;
+
   // ---- delete account A through the API (fresh sign-in → allowed) ----
   const del = await call("DELETE", "/api/me", A);
   check("DELETE /api/me → 204", del.status === 204, del);
   await sleep(1500);
   const after = await fb.db.get(`users/${encodeKey(uidA)}`);
   check("users/{uidA} deleted from RTDB", after === null, after);
+  if (lastShareOfA) {
+    check("account deletion removed A's public link", (await fb.db.get(`sharedPlaylists/${encodeKey(lastShareOfA)}`)) === null);
+  }
   let authGone = false;
   try {
     await fb.getUser(uidA);
@@ -168,8 +225,13 @@ try {
     await fb.db.remove(`users/${encodeKey(uid)}`).catch(() => {});
     await fb.deleteUser(uid).catch(() => {});
   }
+  for (const id of createdShares) await fb.db.remove(`sharedPlaylists/${encodeKey(id)}`).catch(() => {});
   const leftovers = await Promise.all(created.map((uid) => fb.db.get(`users/${encodeKey(uid)}`)));
-  console.log(`cleanup: removed ${created.length} remaining test user(s); leftover data nodes: ${leftovers.filter((x) => x !== null).length}`);
+  const shareLeft = await Promise.all(createdShares.map((id) => fb.db.get(`sharedPlaylists/${encodeKey(id)}`)));
+  console.log(
+    `cleanup: removed ${created.length} remaining test user(s); leftover data nodes: ${leftovers.filter((x) => x !== null).length}; ` +
+      `leftover sharedPlaylists entries: ${shareLeft.filter((x) => x !== null).length}`
+  );
   console.log(`\n${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);
 }

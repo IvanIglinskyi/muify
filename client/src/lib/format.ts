@@ -21,6 +21,18 @@ export function formatListening(totalSeconds: number): string {
   return `${s}s`;
 }
 
+/** Home "Total Time" tile: 12000 -> "3 h 20 min", 1500 -> "25 min", 30 -> "<1 min", 0 -> "0 min". */
+export function formatHoursMinutes(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(Number.isFinite(totalSeconds) ? totalSeconds : 0));
+  if (s === 0) return "0 min";
+  if (s < 60) return "<1 min";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h === 0) return `${m} min`;
+  if (m === 0) return `${formatNumber(h)} h`;
+  return `${formatNumber(h)} h ${m} min`;
+}
+
 export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }

@@ -1,0 +1,435 @@
+/* ======================================================================
+   Artist links, artist page, recommendations, playlist sharing/reorder,
+   keyboard shortcuts. (Loaded after index.css.)
+   ====================================================================== */
+
+/* Artist names are links of their own (rows play on click, cards open the album). */
+.artist-link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
+}
+.artist-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.track-artist.artist-link,
+.player-artist.artist-link {
+  width: fit-content;
+  max-width: 100%;
+}
+.player-text .player-artist.artist-link {
+  display: block;
+}
+.album-card-text .artist-link,
+.album-day-foot .artist-link {
+  pointer-events: auto;
+  position: relative;
+  z-index: 3;
+}
+.album-card-text .artist-link:hover,
+.album-day-foot .artist-link:hover {
+  color: var(--accent);
+}
+
+/* Track rows: the play button's hit area (::after) covers the whole title cell;
+   the artist link is lifted above it. */
+.mix-track {
+  position: relative;
+}
+.mix-track-play {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.mix-track-play::after,
+.recent-play::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+}
+.mix-track-play:focus-visible,
+.recent-play:focus-visible {
+  outline: none;
+}
+.mix-track-play:focus-visible::after,
+.recent-play:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mix-track .artist-link,
+.recent-main .artist-link {
+  position: relative;
+  z-index: 1;
+}
+.recent-main {
+  position: relative;
+}
+.recent-play {
+  display: flex;
+  flex-shrink: 0;
+  border-radius: 6px;
+}
+.recent-play .thumb {
+  display: block;
+}
+
+/* Statistics: guest card + loading tiles */
+.stat-tile.skeleton {
+  min-height: 92px;
+}
+.stats-guest {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  background: linear-gradient(160deg, #33243f, #3a2a45);
+}
+.stats-guest .section-title.small {
+  margin-bottom: 4px;
+}
+.stats-guest p {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.stats-guest > div {
+  flex: 1;
+  min-width: 0;
+}
+.stats-guest-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.stats-guest .pill-btn {
+  padding: 10px 22px;
+  flex-shrink: 0;
+}
+
+/* Daily Mix: "Made for you" note */
+.mix-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mix-note svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* "Because you liked ..." row */
+.because {
+  min-width: 0;
+}
+.because .section-header {
+  margin-bottom: 12px;
+}
+.because-artist {
+  color: var(--accent);
+  text-decoration: none;
+}
+a.because-artist:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.track-tiles {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 150px;
+  gap: 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 2px 2px 10px;
+  scroll-snap-type: x proximity;
+}
+.track-tile {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  scroll-snap-align: start;
+}
+.track-tile-art {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--card-1);
+  box-shadow: var(--shadow);
+  margin-bottom: 4px;
+}
+.track-tile-art > .cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.track-tile-play {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  width: 40px;
+  height: 40px;
+}
+.track-tile-like {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 50%;
+}
+.track-tile.is-current .track-title {
+  color: var(--accent);
+}
+
+/* Artist page */
+.artist-hero-art {
+  border-radius: 50%;
+}
+/* Real photos behind album/artist heroes stay blurred and dark (".cover-img.is-dim" alone
+   would replace the blur and leave a sharp, bright image behind the text). */
+.album-hero-bg.cover-img.is-dim {
+  filter: blur(28px) saturate(1.1) brightness(0.45);
+}
+a.ghost-btn {
+  color: inherit;
+  text-decoration: none;
+}
+.artist-albums .section-title {
+  margin-bottom: 14px;
+}
+
+/* Playlist description, sharing and reordering */
+.playlist-description {
+  max-width: 60ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.share-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  width: fit-content;
+}
+.switch-track {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  transition: background-color 0.15s;
+  flex-shrink: 0;
+}
+.switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.switch.is-on .switch-track {
+  background: var(--accent);
+}
+.switch.is-on .switch-thumb {
+  transform: translateX(16px);
+}
+.share-url {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 460px;
+}
+.share-url input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.share-url input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.share-url .icon-btn {
+  display: inline-grid;
+  place-items: center;
+  color: inherit;
+}
+.share-hint,
+.reorder-hint {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.reorder-hint {
+  margin-bottom: 8px;
+}
+.mix-table .col-drag {
+  width: 28px;
+  padding: 0;
+}
+.drag-handle {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+  cursor: grab;
+}
+.mix-table.has-drag tbody tr[draggable="true"] {
+  cursor: grab;
+}
+.mix-table tr.is-dragging {
+  opacity: 0.45;
+}
+.mix-table tr.drop-above td {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.mix-table tr.drop-below td {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* Dialog textarea */
+.field textarea {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 90px;
+}
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Keyboard shortcuts */
+kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-bottom-width: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+.menu-kbd {
+  margin-left: auto;
+}
+.shortcuts-modal {
+  width: min(460px, calc(100vw - 32px));
+}
+.shortcuts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.shortcuts-head .modal-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.shortcuts-table th {
+  text-align: left;
+  font-weight: 400;
+  white-space: nowrap;
+  padding: 6px 12px 6px 0;
+  width: 1%;
+}
+.shortcuts-table td {
+  padding: 6px 0;
+  color: var(--text-2);
+}
+.shortcuts-table tr + tr th,
+.shortcuts-table tr + tr td {
+  border-top: 1px solid var(--line);
+}
+.shortcuts-note {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.shortcut-osd {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--player-h) + 18px);
+  transform: translate(-50%, 8px);
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(20, 13, 24, 0.92);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 60;
+}
+.shortcut-osd.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.shortcut-osd:empty {
+  padding: 0;
+  border: 0;
+}
+
+@media (max-width: 767px) {
+  .mix-table .col-drag {
+    display: none;
+  }
+  .stats-guest {
+    flex-wrap: wrap;
+  }
+  .track-tiles {
+    grid-auto-columns: 128px;
+    gap: 12px;
+  }
+  .share-url {
+    max-width: 100%;
+  }
+  .shortcut-osd {
+    bottom: calc(var(--player-h) + 12px);
+  }
+}

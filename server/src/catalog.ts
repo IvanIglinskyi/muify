@@ -5,19 +5,41 @@
 // (likes, user playlists, history, last playback) belongs to one listener: every function that
 // touches it takes the caller's `UserDoc` (see userStore.ts), or `null` for a signed-out guest —
 // guests see no likes, default "Recent plays" and the demo player state.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { albumOfTheDayId as seedDayId, albums as seedAlbums, weekAlbumIds as seedWeekIds } from "./data/albums.js";
 import { genreDefs } from "./data/genres.js";
-import { playlists, statsBase } from "./data/playlists.js";
+import { playlists } from "./data/playlists.js";
 import { dailyMixTrackIds, lastPlayback as seedLastPlayback, recentTrackIds, tracks as seedTracks } from "./data/tracks.js";
 import { jamendoClientId, jamendoGet, type JamendoParams } from "./jamendo/client.js";
 import { genreMappings, type JamendoGenreQuery } from "./jamendo/genres.js";
-import { jamendoAlbumIdOf, jamendoTrackIdOf, mapAlbum, mapTrack, type MappedAlbum, type MappedTrack } from "./jamendo/map.js";
-import type { JamendoAlbum, JamendoTrack } from "./jamendo/types.js";
+import {
+  jamendoAlbumIdOf,
+  jamendoArtistIdOf,
+  jamendoTrackIdOf,
+  mapAlbum,
+  mapArtist,
+  mapTrack,
+  type MappedAlbum,
+  type MappedTrack,
+} from "./jamendo/map.js";
+import type { JamendoAlbum, JamendoArtist, JamendoTrack } from "./jamendo/types.js";
+import {
+  artistKey,
+  buildProfile,
+  hashString,
+  MIN_SIGNALS,
+  pickMix,
+  profileSignature,
+  recentlyPlayed,
+  seededShuffle,
+  type TasteProfile,
+} from "./recommend.js";
 import type {
   Album,
   AlbumSort,
   AlbumWithTracks,
+  Artist,
+  ArtistDetails,
   CatalogStatus,
   Genre,
   HistoryEntry,
@@ -25,12 +47,25 @@ import type {
   ListeningStats,
   PlaybackState,
   Playlist,
+  Recommendations,
+  SharedPlaylist,
   Stats,
   Track,
   TrackSort,
 } from "./types.js";
 import { authMode, firebaseConfigInfo } from "./firebase.js";
-import { LOCAL_UID, setDocHooks, type StoredPlaylist, type UserDoc } from "./userStore.js";
+import { LOCAL_UID, setDocHooks, userStore, type StoredPlaylist, type UserDoc } from "./userStore.js";
+
+/** Artist page id of a seed (fictional) artist: "sa-<slug of the name>". */
+export function seedArtistId(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return `sa-${slug || "x"}`;
+}
 
 /** The caller's state, or null for a guest. */
 export type Viewer = UserDoc | null;
@@ -47,8 +82,10 @@ const upstreamAudio = new Map<string, string>();
 const seedAlbumOfTrack = new Map<string, string>();
 for (const a of seedAlbums) for (const tid of a.trackIds) if (!seedAlbumOfTrack.has(tid)) seedAlbumOfTrack.set(tid, a.id);
 
-for (const t of seedTracks) trackIndex.set(t.id, { ...t, liked: false, albumId: seedAlbumOfTrack.get(t.id) });
-for (const a of seedAlbums) albumIndex.set(a.id, { ...a, liked: false });
+for (const t of seedTracks) {
+  trackIndex.set(t.id, { ...t, liked: false, albumId: seedAlbumOfTrack.get(t.id), artistId: seedArtistId(t.artist) });
+}
+for (const a of seedAlbums) albumIndex.set(a.id, { ...a, liked: false, artistId: seedArtistId(a.artist) });
 
 setDocHooks({
   onLoad(doc, fresh) {
@@ -88,6 +125,7 @@ function registerTrack({ track, upstreamAudio: audio }: MappedTrack): Track {
         genres: [...new Set([...known.genres, ...track.genres])],
         coverUrl: track.coverUrl ?? known.coverUrl,
         albumId: track.albumId ?? known.albumId,
+        artistId: track.artistId ?? known.artistId,
       }
     : track;
   merged.liked = false;
@@ -236,18 +274,6 @@ function dayNumber(): number {
   return Math.floor(Date.now() / 86_400_000);
 }
 
-/** Deterministic shuffle seeded by `seed`. */
-function seededShuffle<T>(list: T[], seed: number): T[] {
-  const out = [...list];
-  let s = seed || 1;
-  for (let i = out.length - 1; i > 0; i--) {
-    s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
-    const j = s % (i + 1);
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
-
 /** Popular albums this week (with tracks); shared by Album of the day + Albums of the Week. */
 async function popularAlbums(): Promise<AlbumWithTracks[]> {
   const list = await jamendoAlbums({ order: "popularity_week", limit: 10 });
@@ -295,8 +321,9 @@ export async function weekAlbums(u: Viewer): Promise<AlbumWithTracks[]> {
   return likeAlbums(list, u);
 }
 
-export async function dailyMix(u: Viewer): Promise<Track[]> {
-  const list = await fromJamendo(
+/** The same mix for everyone (guests, listeners without enough data). */
+async function genericDailyMix(): Promise<Track[]> {
+  return fromJamendo(
     "Daily mix",
     async () => {
       const pool = await groupedByArtist({ order: "popularity_month", limit: 50 });
@@ -304,7 +331,173 @@ export async function dailyMix(u: Viewer): Promise<Track[]> {
     },
     () => tracksByIds(dailyMixTrackIds, null)
   );
-  return likeAll(list, u);
+}
+
+export async function dailyMix(u: Viewer): Promise<Track[]> {
+  return (await recommendations(u)).dailyMix.tracks;
+}
+
+// ---------------------------------------------------------------------------
+// Personalised recommendations (Daily Mix + "Because you liked …")
+// ---------------------------------------------------------------------------
+const MIX_SIZE = 12;
+const BECAUSE_SIZE = 10;
+const BECAUSE_MIN = 4;
+/** Recently played tracks are left out of the personal mix. */
+const EXCLUDE_RECENT = 30;
+const REC_TTL_MS = 60 * 60_000;
+const REC_CACHE_MAX = 500;
+
+interface CachedRecs {
+  key: string;
+  until: number;
+  mixIds: string[];
+  personalised: boolean;
+  basedOn: string[];
+  because: { artist: { id: string | null; name: string }; trackIds: string[] } | null;
+}
+const recCache = new Map<string, CachedRecs>();
+/** In-flight computations, so a burst of requests from one user costs one set of Jamendo calls. */
+const recInflight = new Map<string, Promise<CachedRecs>>();
+
+function tasteOf(u: UserDoc): TasteProfile {
+  const s = u.state;
+  return buildProfile({
+    likedTracks: [...s.likedTracks.keys()].map((id) => trackIndex.get(id)).filter((t): t is Track => Boolean(t)),
+    likedAlbums: [...s.likedAlbums.keys()].map((id) => albumIndex.get(id)).filter((a): a is Album => Boolean(a)),
+    plays: s.history
+      .map((h) => ({ track: trackIndex.get(h.trackId), seconds: h.seconds }))
+      .filter((p): p is { track: Track; seconds: number } => Boolean(p.track)),
+  });
+}
+
+/** Jamendo tags for our genre ids (OR-matched with fuzzytags). */
+function tagsFor(genreIds: string[]): string[] {
+  return [...new Set(genreIds.flatMap((g) => genreMappings[g]?.matchTags.slice(0, 2) ?? []))].slice(0, 6);
+}
+
+/** Candidate pool for one listener: seed catalogue, or Jamendo tracks by their artists / tags. */
+async function candidatePool(p: TasteProfile, source: "jamendo" | "seed"): Promise<Track[]> {
+  if (source === "seed") return seedTracks.map((t) => trackIndex.get(t.id)!).filter(Boolean);
+  const artistIds = p.artists
+    .map((a) => (a.id ? jamendoArtistIdOf(a.id) : null))
+    .filter((x): x is string => Boolean(x))
+    .slice(0, 5);
+  const tags = tagsFor(p.genres.slice(0, 3).map((g) => g.id));
+  const [byArtists, byTags] = await Promise.all([
+    artistIds.length ? jamendoTracks({ artist_id: artistIds.join(" "), order: "popularity_total", limit: 40 }) : [],
+    tags.length ? jamendoTracks({ fuzzytags: tags.join(" "), boost: "popularity_month", groupby: "artist_id", limit: 50 }) : [],
+  ]);
+  return [...byArtists, ...byTags];
+}
+
+function becauseRow(
+  p: TasteProfile,
+  pool: Track[],
+  u: UserDoc,
+  seed: number
+): CachedRecs["because"] {
+  // One of the top liked artists, rotating daily.
+  const choices = p.likedArtists.slice(0, 3);
+  if (!choices.length) return null;
+  const artist = choices[seed % choices.length];
+  const own = (t: Track) => artistKey(t.artistId, t.artist) === artist.key || t.artist === artist.name;
+  const likedOfArtist = [...u.state.likedTracks.keys()]
+    .map((id) => trackIndex.get(id))
+    .filter((t): t is Track => Boolean(t) && own(t!));
+  const genres = new Set(likedOfArtist.flatMap((t) => t.genres));
+  if (genres.size === 0) for (const g of p.genres.slice(0, 2)) genres.add(g.id);
+  const recent = recentlyPlayed(u.state.history, EXCLUDE_RECENT);
+  const fresh = (t: Track) => !u.state.likedTracks.has(t.id) && !recent.has(t.id);
+  const sameArtist = seededShuffle(pool.filter((t) => own(t) && fresh(t)), seed).slice(0, 3);
+  const similar = seededShuffle(
+    pool.filter((t) => !own(t) && fresh(t) && t.genres.some((g) => genres.has(g))),
+    seed
+  );
+  const out: Track[] = [];
+  const seen = new Set<string>();
+  const perArtist = new Map<string, number>();
+  for (const t of [...sameArtist, ...similar]) {
+    if (out.length >= BECAUSE_SIZE || seen.has(t.id)) continue;
+    const k = artistKey(t.artistId, t.artist);
+    if ((perArtist.get(k) ?? 0) >= 3) continue;
+    perArtist.set(k, (perArtist.get(k) ?? 0) + 1);
+    seen.add(t.id);
+    out.push(t);
+  }
+  if (out.length < BECAUSE_MIN) return null;
+  return { artist: { id: artist.id, name: artist.name }, trackIds: out.map((t) => t.id) };
+}
+
+async function computeRecs(u: UserDoc, p: TasteProfile, key: string): Promise<CachedRecs> {
+  const generic = async (): Promise<CachedRecs> => ({
+    key,
+    until: Date.now() + REC_TTL_MS,
+    mixIds: (await genericDailyMix()).map((t) => t.id),
+    personalised: false,
+    basedOn: [],
+    because: null,
+  });
+  if (p.signals < MIN_SIGNALS) return generic();
+
+  const seed = hashString(`${u.uid}:${dayNumber()}`);
+  const source = catalogStatus().source;
+  let pool: Track[];
+  try {
+    pool = await candidatePool(p, source);
+  } catch (e) {
+    console.warn(`[recs] Jamendo candidates failed (${(e as Error).message}); serving the generic mix.`);
+    const g = await generic();
+    return { ...g, until: Date.now() + 5 * 60_000 }; // try again soon
+  }
+  const exclude = recentlyPlayed(u.state.history, EXCLUDE_RECENT);
+  let mix = pickMix(pool, p, { exclude, seed, size: MIX_SIZE });
+  if (mix.length < MIX_SIZE / 2) return generic();
+  if (mix.length < MIX_SIZE) {
+    // Top up with the generic mix (still skipping what was just played).
+    const have = new Set(mix.map((t) => t.id));
+    const extra = (await genericDailyMix()).filter((t) => !have.has(t.id) && !exclude.has(t.id));
+    mix = [...mix, ...extra].slice(0, MIX_SIZE);
+  }
+  return {
+    key,
+    until: Date.now() + REC_TTL_MS,
+    mixIds: mix.map((t) => t.id),
+    personalised: true,
+    basedOn: p.artists.slice(0, 3).map((a) => a.name),
+    because: becauseRow(p, pool, u, seed),
+  };
+}
+
+/** Personal Daily Mix + "Because you liked …" (cached per user; generic for guests). */
+export async function recommendations(u: Viewer): Promise<Recommendations> {
+  if (!u) {
+    return { dailyMix: { personalised: false, tracks: await genericDailyMix(), basedOn: [] }, becauseYouLiked: null };
+  }
+  const p = tasteOf(u);
+  // Changes when the day, the catalogue source or the listener's taste changes.
+  const key = `${dayNumber()}|${catalogStatus().source}|${p.signals >= MIN_SIGNALS ? profileSignature(p) : "generic"}`;
+  let recs = recCache.get(u.uid);
+  if (!recs || recs.key !== key || recs.until < Date.now()) {
+    let pending = recInflight.get(u.uid);
+    if (!pending) {
+      pending = computeRecs(u, p, key).finally(() => recInflight.delete(u.uid));
+      recInflight.set(u.uid, pending);
+    }
+    recs = await pending;
+    recCache.delete(u.uid);
+    if (recCache.size >= REC_CACHE_MAX) recCache.delete(recCache.keys().next().value!);
+    recCache.set(u.uid, recs);
+  }
+  return {
+    dailyMix: { personalised: recs.personalised, tracks: tracksByIds(recs.mixIds, u), basedOn: recs.basedOn },
+    becauseYouLiked: recs.because && { artist: recs.because.artist, tracks: tracksByIds(recs.because.trackIds, u) },
+  };
+}
+
+/** Test hook. */
+export function clearRecommendationCache() {
+  recCache.clear();
 }
 
 /** Default "Recent plays" (used while the listener has no play history yet). */
@@ -531,6 +724,66 @@ export async function getAlbum(id: string, u: Viewer): Promise<AlbumWithTracks |
   }
 }
 
+// ---------------------------------------------------------------------------
+// Artists
+// ---------------------------------------------------------------------------
+const ARTIST_TOP_TRACKS = 10;
+const ARTIST_ALBUMS = 24;
+
+/** Artist page from what the server already knows (seed data, or Jamendo items seen before). */
+function artistFromRegistry(id: string, u: Viewer): ArtistDetails | undefined {
+  const tracks = [...trackIndex.values()].filter((t) => t.artistId === id);
+  const albums = [...albumIndex.values()].filter((a) => a.artistId === id);
+  const name = tracks[0]?.artist ?? albums[0]?.artist;
+  if (!name) return undefined;
+  const source = tracks[0]?.source ?? albums[0]?.source ?? "seed";
+  return {
+    id,
+    name,
+    source,
+    shareUrl: jamendoArtistIdOf(id) ? `https://www.jamendo.com/artist/${jamendoArtistIdOf(id)}` : undefined,
+    topTracks: likeAll([...tracks].sort((a, b) => b.plays - a.plays).slice(0, ARTIST_TOP_TRACKS), u),
+    albums: albums
+      .sort((a, b) => b.releaseDate.localeCompare(a.releaseDate))
+      .slice(0, ARTIST_ALBUMS)
+      .map((a) => withTracks(a, u)),
+  };
+}
+
+/**
+ * GET /api/artists/:id — "sa-…" ids come from the seed; "jr…" ids from Jamendo (/artists for the
+ * profile, /tracks?artist_id for the top tracks, /albums/tracks?artist_id for the albums).
+ * Returns undefined when the artist does not exist. If Jamendo is down, falls back to what the
+ * server already knows about the artist, else throws a 502 UserError.
+ */
+export async function getArtist(id: string, u: Viewer): Promise<ArtistDetails | undefined> {
+  const jid = jamendoArtistIdOf(id);
+  if (!jid) return id.startsWith("sa-") ? artistFromRegistry(id, u) : undefined;
+  if (!jamendoClientId()) return artistFromRegistry(id, u);
+  try {
+    const [info, top, albums] = await Promise.all([
+      jamendoGet<JamendoArtist>("artists", { id: jid }),
+      jamendoTracks({ artist_id: jid, order: "popularity_total", limit: ARTIST_TOP_TRACKS }),
+      jamendoAlbums({ artist_id: jid, order: "releasedate_desc", limit: ARTIST_ALBUMS }),
+    ]);
+    if (!info[0]) return undefined;
+    const artist: Artist = mapArtist(info[0], jamendoClientId());
+    return {
+      ...artist,
+      topTracks: likeAll(top, u),
+      albums: likeAlbums(
+        albums.filter((a) => a.tracks.length > 0),
+        u
+      ),
+    };
+  } catch (e) {
+    const known = artistFromRegistry(id, u);
+    if (known) return known;
+    console.warn(`[jamendo] Artist ${id} failed: ${(e as Error).message}`);
+    throw new UserError(502, "Artist details are unavailable right now. Please try again later.");
+  }
+}
+
 /** Upstream stream URL for a Jamendo track (server-side only). */
 export async function upstreamAudioFor(id: string): Promise<string | undefined> {
   if (!upstreamAudio.has(id)) {
@@ -619,6 +872,8 @@ const userPlaylistOut = (p: StoredPlaylist): Playlist => ({
   kind: "user",
   // Hide ids we cannot resolve (e.g. a Jamendo track whose snapshot was lost).
   trackIds: p.trackIds.filter((id) => trackIndex.has(id)),
+  description: p.description ?? "",
+  shareId: p.shareId ?? null,
 });
 
 export async function listPlaylists(u: Viewer): Promise<Playlist[]> {
@@ -644,7 +899,7 @@ export const MAX_PLAYLIST_TRACKS = 1000;
 /** Expected failures the routes turn into HTTP status codes. */
 export class UserError extends Error {
   constructor(
-    public status: 400 | 403 | 404 | 409,
+    public status: 400 | 403 | 404 | 409 | 502,
     message: string
   ) {
     super(message);
@@ -672,17 +927,86 @@ export async function createPlaylist(u: UserDoc, name: string, trackIds: string[
   return userPlaylistOut(p);
 }
 
-export function renamePlaylist(u: UserDoc, id: string, name: string): Playlist {
+/** Renames and/or changes the description ("" clears it). */
+export function updatePlaylist(u: UserDoc, id: string, changes: { name?: string; description?: string }): Playlist {
   const p = findUserPlaylist(u, id);
-  p.name = name;
+  if (changes.name !== undefined) p.name = changes.name;
+  if (changes.description !== undefined) {
+    if (changes.description) p.description = changes.description;
+    else delete p.description;
+  }
   p.updatedAt = new Date().toISOString();
   u.savePlaylist(p);
   return userPlaylistOut(p);
 }
 
-export function deletePlaylist(u: UserDoc, id: string): void {
-  findUserPlaylist(u, id);
+export async function deletePlaylist(u: UserDoc, id: string): Promise<void> {
+  const p = findUserPlaylist(u, id);
+  if (p.shareId) await userStore().removeShare(p.shareId);
   u.removePlaylist(id);
+}
+
+/**
+ * New track order. `trackIds` must list exactly the playlist's (visible) tracks — otherwise the
+ * client is out of date (409). Ids hidden from the client (unresolvable) keep their place at the end.
+ */
+export function reorderPlaylist(u: UserDoc, id: string, trackIds: string[]): Playlist {
+  const p = findUserPlaylist(u, id);
+  const visible = p.trackIds.filter((t) => trackIndex.has(t));
+  const hidden = p.trackIds.filter((t) => !trackIndex.has(t));
+  const same =
+    trackIds.length === visible.length && new Set(trackIds).size === trackIds.length && trackIds.every((t) => visible.includes(t));
+  if (!same) throw new UserError(409, "The new order must list exactly the playlist's current tracks (reload and try again)");
+  p.trackIds = [...trackIds, ...hidden];
+  p.updatedAt = new Date().toISOString();
+  u.savePlaylist(p);
+  return userPlaylistOut(p);
+}
+
+/** Turns the public link on (idempotent: an existing link is kept). */
+export async function sharePlaylist(u: UserDoc, id: string): Promise<Playlist> {
+  const p = findUserPlaylist(u, id);
+  if (!p.shareId) {
+    const shareId = randomBytes(9).toString("base64url"); // 12 URL-safe chars
+    await userStore().putShare(shareId, u.uid, p.id);
+    p.shareId = shareId;
+    p.updatedAt = new Date().toISOString();
+    u.savePlaylist(p);
+  }
+  return userPlaylistOut(p);
+}
+
+/** Turns the public link off: the old link answers 404 from now on. */
+export async function unsharePlaylist(u: UserDoc, id: string): Promise<Playlist> {
+  const p = findUserPlaylist(u, id);
+  if (p.shareId) {
+    const old = p.shareId;
+    delete p.shareId;
+    p.updatedAt = new Date().toISOString();
+    u.savePlaylist(p);
+    await userStore().removeShare(old);
+  }
+  return userPlaylistOut(p);
+}
+
+/** GET /api/shared/:shareId — read-only view for anyone (guests included). */
+export async function getSharedPlaylist(shareId: string, viewer: Viewer): Promise<SharedPlaylist | undefined> {
+  const found = await userStore().resolveShare(shareId);
+  if (!found) return undefined;
+  const { doc, playlist } = found;
+  const tracks = tracksByIds(playlist.trackIds, viewer);
+  const mine = viewer?.uid === doc.uid;
+  return {
+    shareId,
+    name: playlist.name,
+    description: playlist.description ?? null,
+    ownerName: doc.state.profile?.displayName ?? null,
+    ownedByYou: mine,
+    playlistId: mine ? playlist.id : null,
+    trackIds: tracks.map((t) => t.id),
+    tracks,
+    updatedAt: playlist.updatedAt,
+  };
 }
 
 /** Adds a track (no-op if already there). On Favourites this likes the track. */
@@ -784,6 +1108,7 @@ type Tally = { plays: number; seconds: number };
 export function listeningStats(u: UserDoc): ListeningStats {
   const byTrack = new Map<string, Tally>();
   const byArtist = new Map<string, Tally>();
+  const artistIds = new Map<string, string>();
   const days = new Map<string, Tally>();
   const today = new Date();
   for (let i = 6; i >= 0; i--) {
@@ -801,7 +1126,10 @@ export function listeningStats(u: UserDoc): ListeningStats {
     totalSeconds += h.seconds;
     bump(byTrack, h.trackId, h.seconds);
     const t = trackIndex.get(h.trackId);
-    if (t) bump(byArtist, t.artist, h.seconds);
+    if (t) {
+      bump(byArtist, t.artist, h.seconds);
+      if (t.artistId && !artistIds.has(t.artist)) artistIds.set(t.artist, t.artistId);
+    }
     const day = localDate(new Date(h.playedAt));
     if (days.has(day)) bump(days, day, h.seconds);
   }
@@ -824,17 +1152,24 @@ export function listeningStats(u: UserDoc): ListeningStats {
     topArtists: [...byArtist]
       .sort((a, b) => rank(a[1], b[1]))
       .slice(0, 10)
-      .map(([artist, v]) => ({ artist, ...v })),
+      .map(([artist, v]) => ({ artist, artistId: artistIds.get(artist) ?? null, ...v })),
     last7Days: [...days].map(([date, v]) => ({ date, ...v })),
   };
 }
 
-export function computeStats(u: Viewer): Stats {
-  const likes = (u?.state.likedTracks.size ?? 0) + (u?.state.likedAlbums.size ?? 0);
+/** Home statistics tiles: real listening time, likes and distinct tracks of this listener. */
+export function computeStats(u: UserDoc): Stats {
+  let totalSeconds = 0;
+  const distinct = new Set<string>();
+  for (const h of u.state.history) {
+    totalSeconds += h.seconds;
+    distinct.add(h.trackId);
+  }
   return {
-    totalHours: statsBase.totalHours,
-    likes: statsBase.likesFromOtherContent + likes,
-    tracks: statsBase.tracks,
+    totalSeconds,
+    likes: u.state.likedTracks.size + u.state.likedAlbums.size,
+    tracks: distinct.size,
+    plays: u.state.history.length,
   };
 }
 

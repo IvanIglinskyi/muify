@@ -17,6 +17,7 @@ import { formatTime } from "../lib/format";
 import { licenseLabel } from "../lib/license";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlaybackPosition, usePlayer } from "../store/PlayerContext";
+import { ArtistLink } from "./ArtistLink";
 import { Cover } from "./Cover";
 import { HeartButton, RangeSlider } from "./common";
 
@@ -55,7 +56,11 @@ export function PlayerBar({ queueOpen, onToggleQueue }: { queueOpen: boolean; on
         <span className="player-cover">{track ? <Cover seed={track.id} src={track.coverUrl} /> : null}</span>
         <div className="player-text">
           <span className="player-title">{track?.title ?? "Nothing playing"}</span>
-          <span className="player-artist">{track?.artist ?? "—"}</span>
+          {track ? (
+            <ArtistLink className="player-artist" name={track.artist} id={track.artistId} />
+          ) : (
+            <span className="player-artist">—</span>
+          )}
           {track && (track.licenseUrl || track.shareUrl) && (
             <span className="player-credit">
               {track.licenseUrl && (

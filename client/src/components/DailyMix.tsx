@@ -1,10 +1,11 @@
+import { Sparkles } from "lucide-react";
 import { useState } from "react";
 import { useLibrary } from "../store/LibraryContext";
 import { SectionHeader } from "./common";
 import { TrackTable } from "./TrackTable";
 
 export function DailyMix({ query }: { query: string }) {
-  const { dailyMixIds, tracks, loading } = useLibrary();
+  const { dailyMixIds, tracks, loading, mixPersonalised, mixBasedOn } = useLibrary();
   const [expanded, setExpanded] = useState(false);
 
   const q = query.trim().toLowerCase();
@@ -20,6 +21,12 @@ export function DailyMix({ query }: { query: string }) {
         action={expanded ? "Collapse" : "Explore All"}
         onAction={() => setExpanded((e) => !e)}
       />
+      {mixPersonalised && (
+        <p className="mix-note">
+          <Sparkles size={13} aria-hidden="true" /> Made for you
+          {mixBasedOn.length > 0 && <> · based on {mixBasedOn.join(", ")}</>}
+        </p>
+      )}
       <div className={`mix-scroll${expanded ? " is-expanded" : ""}`}>
         <TrackTable tracks={list} empty={loading ? undefined : <>No tracks match “{query}”.</>} />
       </div>

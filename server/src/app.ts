@@ -13,7 +13,9 @@ import {
   dailyMix,
   deletePlaylist,
   getAlbum,
+  getArtist,
   getPlaylist,
+  getSharedPlaylist,
   lastPlayback,
   listAlbums,
   listeningStats,
@@ -24,12 +26,16 @@ import {
   MAX_QUEUE,
   playlistTracks,
   recentTracks,
+  recommendations,
   removeTrackFromPlaylist,
-  renamePlaylist,
+  reorderPlaylist,
   reportPlay,
   savePlayback,
   setAlbumLike,
   setTrackLike,
+  sharePlaylist,
+  unsharePlaylist,
+  updatePlaylist,
   upstreamAudioFor,
   UserError,
   weekAlbums,
@@ -38,7 +44,7 @@ import {
 import { forgetTokensOf, requireMember, viewerDoc } from "./auth.js";
 import { findGenre } from "./data/genres.js";
 import { firebase } from "./firebase.js";
-import { userStore } from "./userStore.js";
+import { SHARE_ID_RE, userStore } from "./userStore.js";
 import type { AlbumSort, MeResponse, TrackSort } from "./types.js";
 
 export const app = express();
@@ -250,17 +256,40 @@ app.post(
   })
 );
 
-/** PATCH /api/playlists/:id { name } — user playlists only (403 for built-in ones). */
+const MAX_DESCRIPTION = 300;
+
+/** PATCH /api/playlists/:id { name?, description? } — user playlists only (403 for built-in ones). */
 app.patch(
   "/api/playlists/:id",
   handle(async (req, res) => {
     const body = requireBody(req, res);
     if (!body) return;
-    const name = bodyPlaylistName(res, body.name);
-    if (name === undefined) return;
+    if (body.name === undefined && body.description === undefined) {
+      res.status(400).json({ error: "Send `name` and/or `description`" });
+      return;
+    }
+    const changes: { name?: string; description?: string } = {};
+    if (body.name !== undefined) {
+      const name = bodyPlaylistName(res, body.name);
+      if (name === undefined) return;
+      changes.name = name;
+    }
+    if (body.description !== undefined) {
+      if (body.description !== null && typeof body.description !== "string") {
+        res.status(400).json({ error: "`description` must be a string or null" });
+        return;
+      }
+      // Keep line breaks, drop other control characters, trim.
+      const d = (body.description ?? "").replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "").trim();
+      if (d.length > MAX_DESCRIPTION) {
+        res.status(400).json({ error: `\`description\` must be at most ${MAX_DESCRIPTION} characters` });
+        return;
+      }
+      changes.description = d;
+    }
     const m = await requireMember(req, res);
     if (!m) return;
-    res.json(renamePlaylist(m.doc, req.params.id, name));
+    res.json(updatePlaylist(m.doc, req.params.id, changes));
   })
 );
 
@@ -269,8 +298,85 @@ app.delete(
   handle(async (req, res) => {
     const m = await requireMember(req, res);
     if (!m) return;
-    deletePlaylist(m.doc, req.params.id);
+    await deletePlaylist(m.doc, req.params.id);
     res.status(204).end();
+  })
+);
+
+/** PUT /api/playlists/:id/tracks { trackIds } — reorder (must be a permutation of the current tracks; 409 otherwise). */
+app.put(
+  "/api/playlists/:id/tracks",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const trackIds = bodyIdList(res, body.trackIds, "trackIds", 1000);
+    if (!trackIds) return;
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.json(reorderPlaylist(m.doc, req.params.id, trackIds));
+  })
+);
+
+/** PUT /api/playlists/:id/share → playlist with `shareId` (public read-only link /p/:shareId). */
+app.put(
+  "/api/playlists/:id/share",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.json(await sharePlaylist(m.doc, req.params.id));
+  })
+);
+
+/** DELETE /api/playlists/:id/share → playlist with `shareId: null`; the old link then answers 404. */
+app.delete(
+  "/api/playlists/:id/share",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.json(await unsharePlaylist(m.doc, req.params.id));
+  })
+);
+
+/** GET /api/shared/:shareId — public read-only playlist (no sign-in needed). */
+app.get(
+  "/api/shared/:shareId",
+  handle(async (req, res) => {
+    const shareId = req.params.shareId;
+    const shared = SHARE_ID_RE.test(shareId) ? await getSharedPlaylist(shareId, await viewerDoc(req)) : undefined;
+    res.setHeader("cache-control", "no-store");
+    if (!shared) {
+      res.status(404).json({ error: "This playlist link is not active" });
+      return;
+    }
+    res.json(shared);
+  })
+);
+
+// ---- Artists ----
+const ARTIST_ID_RE = /^(jr\d{1,12}|sa-[a-z0-9-]{1,60})$/;
+
+app.get(
+  "/api/artists/:id",
+  handle(async (req, res) => {
+    if (!ARTIST_ID_RE.test(req.params.id)) {
+      res.status(400).json({ error: "Malformed artist id" });
+      return;
+    }
+    const artist = await getArtist(req.params.id, await viewerDoc(req));
+    if (!artist) {
+      res.status(404).json({ error: "Artist not found" });
+      return;
+    }
+    res.json(artist);
+  })
+);
+
+// ---- Recommendations ----
+app.get(
+  "/api/recommendations",
+  handle(async (req, res) => {
+    res.setHeader("cache-control", "private, no-cache");
+    res.json(await recommendations(await viewerDoc(req)));
   })
 );
 
@@ -518,10 +624,14 @@ app.delete(
 );
 
 // ---- Stats ----
+/** GET /api/stats — the caller's own totals (401 for guests). */
 app.get(
   "/api/stats",
   handle(async (req, res) => {
-    res.json(computeStats(await viewerDoc(req)));
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.setHeader("cache-control", "no-store");
+    res.json(computeStats(m.doc));
   })
 );
 

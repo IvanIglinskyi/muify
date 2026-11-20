@@ -1,4 +1,20 @@
-import { ArrowLeft, Clock, Disc3, Heart, ListMusic, Lock, Pause, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import {
+  AlignLeft,
+  ArrowLeft,
+  Clock,
+  Copy,
+  Disc3,
+  ExternalLink,
+  Globe,
+  Heart,
+  ListMusic,
+  Lock,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
@@ -173,10 +189,74 @@ export function PlaylistsTab() {
   );
 }
 
+export const sharePath = (shareId: string) => `/p/${encodeURIComponent(shareId)}`;
+export const shareUrl = (shareId: string) => `${window.location.origin}${sharePath(shareId)}`;
+
+/** "Public link" switch + copyable URL for a user playlist. */
+function SharePanel({ playlist }: { playlist: Playlist }) {
+  const { setPlaylistShared, notifyInfo, notify } = useLibrary();
+  const [busy, setBusy] = useState(false);
+  const shared = Boolean(playlist.shareId);
+  const url = playlist.shareId ? shareUrl(playlist.shareId) : "";
+
+  const toggle = async () => {
+    setBusy(true);
+    await setPlaylistShared(playlist.id, !shared);
+    setBusy(false);
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      notifyInfo("Link copied");
+    } catch {
+      notify("Could not copy — select the link and copy it manually.");
+    }
+  };
+
+  return (
+    <div className="share-panel">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={shared}
+        className={`switch${shared ? " is-on" : ""}`}
+        onClick={toggle}
+        disabled={busy}
+      >
+        <span className="switch-track" aria-hidden="true">
+          <span className="switch-thumb" />
+        </span>
+        <Globe size={15} aria-hidden="true" /> Public link
+      </button>
+      {shared && (
+        <div className="share-url">
+          <input
+            type="text"
+            readOnly
+            value={url}
+            aria-label="Public link to this playlist"
+            onFocus={(e) => e.target.select()}
+          />
+          <button type="button" className="icon-btn" onClick={copy} aria-label="Copy public link" title="Copy link">
+            <Copy size={16} />
+          </button>
+          <Link to={sharePath(playlist.shareId!)} className="icon-btn" aria-label="Open the public page" title="Open the public page">
+            <ExternalLink size={16} />
+          </Link>
+        </div>
+      )}
+      <p className="share-hint">
+        {shared ? "Anyone with the link can listen (read-only). Turn it off to disable the link." : "Off — only you can see this playlist."}
+      </p>
+    </div>
+  );
+}
+
 export function PlaylistDetail() {
   const { id = "" } = useParams();
   const { query } = useShell();
-  const { playlists, tracks, loading, loadPlaylistTracks, renamePlaylist, deletePlaylist } = useLibrary();
+  const { playlists, tracks, loading, loadPlaylistTracks, renamePlaylist, deletePlaylist, setPlaylistDescription, reorderPlaylist, notifyInfo } =
+    useLibrary();
   const { prompt, confirm } = useDialogs();
   const navigate = useNavigate();
   const playlist = playlists.find((p) => p.id === id);
@@ -236,6 +316,31 @@ export function PlaylistDetail() {
     });
     if (ok && (await deletePlaylist(playlist.id))) navigate("/library/playlists", { replace: true });
   };
+  const onDescribe = async () => {
+    const text = await prompt({
+      title: playlist.description ? "Edit description" : "Add a description",
+      label: "Description",
+      initial: playlist.description ?? "",
+      confirmLabel: "Save",
+      multiline: true,
+      allowEmpty: true,
+      maxLength: 300,
+      hint: "Up to 300 characters. Leave empty to remove it.",
+    });
+    if (text !== null && text !== (playlist.description ?? "")) await setPlaylistDescription(playlist.id, text);
+  };
+
+  // Reordering works on the full list (disabled while a search filters it).
+  const canReorder = editable && !query.trim() && all.length > 1 && all.length === playlist.trackIds.length;
+  const onMove = (from: number, to: number) => {
+    const order = all.map((t) => t.id);
+    if (to < 0 || to >= order.length || from === to) return;
+    const [moved] = order.splice(from, 1);
+    order.splice(to, 0, moved);
+    void reorderPlaylist(playlist.id, order);
+    const t = tracks[moved];
+    if (t) notifyInfo(`Moved “${t.title}” to position ${to + 1}`);
+  };
 
   return (
     <>
@@ -256,6 +361,7 @@ export function PlaylistDetail() {
           <h2 id="playlist-title" className="playlist-hero-title">
             {playlist.name}
           </h2>
+          {playlist.description && <p className="playlist-description">{playlist.description}</p>}
           <p className="meta">
             {playlist.trackIds.length} Tracks&nbsp;&nbsp;{formatLongDuration(total)}
           </p>
@@ -266,16 +372,27 @@ export function PlaylistDetail() {
                 <button type="button" className="ghost-btn" onClick={onRename}>
                   <Pencil size={15} aria-hidden="true" /> Rename
                 </button>
+                <button type="button" className="ghost-btn" onClick={onDescribe}>
+                  <AlignLeft size={15} aria-hidden="true" /> {playlist.description ? "Edit description" : "Add description"}
+                </button>
                 <button type="button" className="ghost-btn is-danger" onClick={onDelete}>
                   <Trash2 size={15} aria-hidden="true" /> Delete
                 </button>
               </>
             )}
           </div>
+          {editable && <SharePanel playlist={playlist} />}
         </div>
       </section>
 
       <section className="card chart-panel" aria-label={`${playlist.name} tracks`} aria-busy={status === "loading"}>
+        {editable && all.length > 1 && (
+          <p className="reorder-hint">
+            {canReorder
+              ? "Drag rows to reorder, or use ⋮ → Move up / Move down."
+              : "Clear the search to reorder tracks."}
+          </p>
+        )}
         {status === "error" && (
           <p className="inline-error" role="alert">
             Could not load this playlist’s tracks.
@@ -286,6 +403,7 @@ export function PlaylistDetail() {
             tracks={visible}
             caption={`${playlist.name} tracks`}
             playlistId={playlist.id}
+            reorder={canReorder ? { onMove } : undefined}
             empty={
               status === "loading" && all.length === 0
                 ? undefined

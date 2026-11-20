@@ -1,15 +1,29 @@
 // Pure mapping from raw Jamendo v3.0 results to our API types.
 // Upstream stream URLs are returned separately and never put into API objects: they carry
 // a `from=app-<client id>` parameter, so the browser plays through /api/tracks/:id/stream.
-import type { AlbumWithTracks, Track } from "../types.js";
+import type { AlbumWithTracks, Artist, Track } from "../types.js";
 import { genresFromMusicInfo } from "./genres.js";
-import type { JamendoAlbum, JamendoAlbumTrack, JamendoTrack } from "./types.js";
+import type { JamendoAlbum, JamendoAlbumTrack, JamendoArtist, JamendoTrack } from "./types.js";
 
 export const JAMENDO_TRACK_PREFIX = "j";
 export const JAMENDO_ALBUM_PREFIX = "ja";
+export const JAMENDO_ARTIST_PREFIX = "jr";
 
 export const toTrackId = (jamendoId: string | number) => `${JAMENDO_TRACK_PREFIX}${jamendoId}`;
 export const toAlbumId = (jamendoId: string | number) => `${JAMENDO_ALBUM_PREFIX}${jamendoId}`;
+export const toArtistId = (jamendoId: string | number) => `${JAMENDO_ARTIST_PREFIX}${jamendoId}`;
+
+/** Artist page id for a raw Jamendo artist_id (undefined when missing / "0"). */
+function artistIdOf(raw: unknown): string | undefined {
+  const s = raw === undefined || raw === null ? "" : String(raw).trim();
+  return /^\d+$/.test(s) && s !== "0" ? toArtistId(s) : undefined;
+}
+
+/** "jr123" → "123" (null if not a Jamendo artist id). */
+export function jamendoArtistIdOf(id: string): string | null {
+  const m = /^jr(\d{1,12})$/.exec(id);
+  return m ? m[1] : null;
+}
 
 /** "j123" → "123" (null if not a Jamendo track id). */
 export function jamendoTrackIdOf(id: string): string | null {
@@ -99,6 +113,7 @@ export function mapTrack(raw: JamendoTrack, extraGenres: string[] = [], clientId
       jamendoId: String(raw.id),
       shareUrl: scrubClientId(cleanUrl(raw.shareurl) ?? `https://www.jamendo.com/track/${raw.id}`, clientId),
       albumId: raw.album_id && String(raw.album_id) !== "0" ? toAlbumId(raw.album_id) : undefined,
+      artistId: artistIdOf(raw.artist_id),
     },
   };
 }
@@ -124,6 +139,7 @@ function mapAlbumTrack(raw: JamendoAlbumTrack, album: JamendoAlbum, genres: stri
       jamendoId: String(raw.id),
       shareUrl: `https://www.jamendo.com/track/${raw.id}`,
       albumId: toAlbumId(album.id),
+      artistId: artistIdOf(album.artist_id),
     },
   };
 }
@@ -153,6 +169,21 @@ export function mapAlbum(raw: JamendoAlbum, genres: string[] = [], clientId: str
       coverUrl,
       jamendoId: String(raw.id),
       shareUrl: scrubClientId(cleanUrl(raw.shareurl), clientId) ?? `https://www.jamendo.com/album/${raw.id}`,
+      artistId: artistIdOf(raw.artist_id),
     },
+  };
+}
+
+/** Maps a GET /artists item. */
+export function mapArtist(raw: JamendoArtist, clientId: string | null = null): Artist {
+  const joinDate = str(raw.joindate);
+  return {
+    id: toArtistId(raw.id),
+    name: str(raw.name) || "Unknown artist",
+    source: "jamendo",
+    imageUrl: scrubClientId(cleanUrl(raw.image), clientId),
+    shareUrl: scrubClientId(cleanUrl(raw.shareurl), clientId) ?? `https://www.jamendo.com/artist/${raw.id}`,
+    website: scrubClientId(cleanUrl(raw.website, { forceHttps: false }), clientId),
+    joinDate: /^\d{4}-\d{2}-\d{2}$/.test(joinDate) ? joinDate : undefined,
   };
 }

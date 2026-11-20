@@ -6,6 +6,12 @@ interface PromptOptions {
   initial?: string;
   confirmLabel?: string;
   maxLength?: number;
+  /** Textarea instead of a one-line input (line breaks are kept). */
+  multiline?: boolean;
+  /** Allow confirming an empty value (resolves with ""). */
+  allowEmpty?: boolean;
+  /** Helper text under the field. */
+  hint?: string;
 }
 
 interface ConfirmOptions {
@@ -16,7 +22,7 @@ interface ConfirmOptions {
 }
 
 interface DialogApi {
-  /** Resolves with the trimmed text, or null if cancelled. */
+  /** Resolves with the trimmed text, or null if cancelled ("" only with `allowEmpty`). */
   prompt: (o: PromptOptions) => Promise<string | null>;
   confirm: (o: ConfirmOptions) => Promise<boolean>;
 }
@@ -68,7 +74,13 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
   const finish = (ok: boolean) => {
     if (settled.current) return;
     settled.current = true;
-    if (pending.kind === "prompt") pending.resolve(ok ? text.replace(/\s+/g, " ").trim() || null : null);
+    if (pending.kind === "prompt") {
+      const o = pending.options;
+      const value = o.multiline
+        ? text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim()
+        : text.replace(/\s+/g, " ").trim();
+      pending.resolve(ok ? (value || (o.allowEmpty ? "" : null)) : null);
+    }
     else pending.resolve(ok);
     ref.current?.close();
     onDone();
@@ -79,7 +91,7 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (pending.kind === "prompt" && !text.trim()) return;
+    if (pending.kind === "prompt" && !text.trim() && !pending.options.allowEmpty) return;
     finish(true);
   };
 
@@ -105,13 +117,30 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
         {pending.kind === "prompt" ? (
           <label className="field">
             <span>{pending.options.label}</span>
-            <input
-              autoFocus
-              value={text}
-              maxLength={pending.options.maxLength ?? 60}
-              onChange={(e) => setText(e.target.value)}
-              onFocus={(e) => e.target.select()}
-            />
+            {pending.options.multiline ? (
+              <textarea
+                autoFocus
+                rows={4}
+                value={text}
+                maxLength={pending.options.maxLength ?? 300}
+                aria-describedby={pending.options.hint ? "dialog-hint" : undefined}
+                onChange={(e) => setText(e.target.value)}
+              />
+            ) : (
+              <input
+                autoFocus
+                value={text}
+                maxLength={pending.options.maxLength ?? 60}
+                aria-describedby={pending.options.hint ? "dialog-hint" : undefined}
+                onChange={(e) => setText(e.target.value)}
+                onFocus={(e) => e.target.select()}
+              />
+            )}
+            {pending.options.hint && (
+              <small id="dialog-hint" className="field-hint">
+                {pending.options.hint}
+              </small>
+            )}
           </label>
         ) : (
           <p className="modal-text">{pending.options.message}</p>
@@ -123,7 +152,7 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
           <button
             type="submit"
             className={`pill-btn${pending.kind === "confirm" && pending.options.danger ? " is-danger" : ""}`}
-            disabled={pending.kind === "prompt" && !text.trim()}
+            disabled={pending.kind === "prompt" && !text.trim() && !pending.options.allowEmpty}
             autoFocus={pending.kind === "confirm"}
           >
             {o.confirmLabel ?? "OK"}

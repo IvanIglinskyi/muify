@@ -4,6 +4,7 @@ import { formatLongDuration } from "../lib/format";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import { albumPath } from "./AlbumCard";
+import { ArtistLink } from "./ArtistLink";
 import { Cover } from "./Cover";
 import { HeartButton, Logo } from "./common";
 
@@ -78,7 +79,8 @@ export function AlbumOfTheDay() {
             </Link>
           </h3>
           <p className="meta">
-            {album.artist} - {album.year}
+            <ArtistLink name={album.artist} id={album.artistId} />
+            {album.year ? ` - ${album.year}` : ""}
           </p>
         </div>
         <HeartButton liked={album.liked} label={album.title} size={24} onToggle={() => toggleAlbumLike(album.id)} />

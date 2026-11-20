@@ -27,7 +27,14 @@ interface LibraryState {
   weekAlbumIds: string[];
   recentIds: string[];
   dailyMixIds: string[];
+  /** Daily Mix built from the listener's taste (false: the generic mix). */
+  mixPersonalised: boolean;
+  /** Artist names the personal mix is based on. */
+  mixBasedOn: string[];
+  /** "Because you liked <artist>" row (null when there isn't enough data). */
+  because: { artist: { id: string | null; name: string }; trackIds: string[] } | null;
   playlists: Playlist[];
+  /** The listener's own totals (null for guests / while loading). */
   stats: Stats | null;
   lastPlayback: PlaybackState | null;
   /** Identity (`useAuth().identityKey`) `lastPlayback` belongs to. */
@@ -57,6 +64,12 @@ interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumId
   deletePlaylist: (id: string) => Promise<boolean>;
   addToPlaylist: (playlistId: string, trackId: string) => Promise<void>;
   removeFromPlaylist: (playlistId: string, trackId: string) => Promise<void>;
+  /** Changes the description of a user playlist ("" clears it). */
+  setPlaylistDescription: (id: string, description: string) => Promise<boolean>;
+  /** New track order of a user playlist (optimistic; rolled back on failure). */
+  reorderPlaylist: (id: string, trackIds: string[]) => Promise<void>;
+  /** Turns the public read-only link on/off. Returns the updated playlist or null. */
+  setPlaylistShared: (id: string, shared: boolean) => Promise<Playlist | null>;
   /** Called by the player after a play was reported: refreshes Recent Plays & history views. */
   historyChanged: () => void;
   clearHistory: () => Promise<boolean>;
@@ -80,6 +93,9 @@ const initialState: LibraryState = {
   weekAlbumIds: [],
   recentIds: [],
   dailyMixIds: [],
+  mixPersonalised: false,
+  mixBasedOn: [],
+  because: null,
   playlists: [],
   stats: null,
   lastPlayback: null,
@@ -136,6 +152,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         tracks: Object.fromEntries(Object.entries(s.tracks).map(([id, t]) => [id, t.liked ? { ...t, liked: false } : t])),
         albums: Object.fromEntries(Object.entries(s.albums).map(([id, a]) => [id, a.liked ? { ...a, liked: false } : a])),
         recentIds: [],
+        because: null,
         playlists: s.playlists.filter((p) => p.kind !== "user").map((p) => (p.id === FAVOURITES_ID ? { ...p, trackIds: [] } : p)),
         stats: null,
         lastPlayback: null,
@@ -143,24 +160,28 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         historyVersion: s.historyVersion + 1,
       }));
     }
+    const member = identityKey !== "guest";
     Promise.all([
       api.getAlbumOfTheDay(),
       api.getWeekAlbums(),
       api.getPlaylists(),
       api.getRecentTracks(),
-      api.getDailyMix(),
-      api.getStats(),
+      api.getRecommendations(),
+      member ? api.getStats() : Promise.resolve(null),
       api.getLastPlayback(),
       api.getTracks({ liked: true }),
       api.getAlbums({ liked: true }),
     ])
-      .then(([day, week, playlists, recent, mix, stats, last, likedTracks, likedAlbums]) => {
+      .then(([day, week, playlists, recent, recs, stats, last, likedTracks, likedAlbums]) => {
+        const mix = recs.dailyMix.tracks;
+        const because = recs.becauseYouLiked;
         if (cancelled) return;
         const allAlbums = [day, ...week, ...likedAlbums];
         const allTracks = [
           ...allAlbums.flatMap((a) => a.tracks),
           ...recent,
           ...mix,
+          ...(because?.tracks ?? []),
           ...likedTracks,
           last.track,
           ...last.queueTracks,
@@ -179,6 +200,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           weekAlbumIds: week.map((a) => a.id),
           recentIds: recent.map((t) => t.id),
           dailyMixIds: mix.map((t) => t.id),
+          mixPersonalised: recs.dailyMix.personalised,
+          mixBasedOn: recs.dailyMix.basedOn,
+          because: because ? { artist: because.artist, trackIds: because.tracks.map((t) => t.id) } : null,
           playlists,
           stats,
           lastPlayback: last,
@@ -380,6 +404,50 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [setTrackLike, putPlaylist, notifyInfo, fail]
   );
 
+  const setPlaylistDescription = useCallback(
+    async (id: string, description: string) => {
+      try {
+        putPlaylist(await api.updatePlaylist(id, { description }));
+        notifyInfo(description ? "Description saved" : "Description removed");
+        return true;
+      } catch (e) {
+        fail("Could not save the description")(e as Error);
+        return false;
+      }
+    },
+    [putPlaylist, notifyInfo, fail]
+  );
+
+  const reorderPlaylist = useCallback(
+    async (id: string, trackIds: string[]) => {
+      const p = stateRef.current.playlists.find((x) => x.id === id);
+      if (!p || p.kind !== "user") return;
+      putPlaylist({ ...p, trackIds }); // optimistic
+      try {
+        putPlaylist(await api.reorderPlaylist(id, trackIds));
+      } catch (e) {
+        putPlaylist(p);
+        fail("Could not reorder the playlist")(e as Error);
+      }
+    },
+    [putPlaylist, fail]
+  );
+
+  const setPlaylistShared = useCallback(
+    async (id: string, shared: boolean) => {
+      try {
+        const p = await (shared ? api.sharePlaylist(id) : api.unsharePlaylist(id));
+        putPlaylist(p);
+        notifyInfo(shared ? "Public link is on — anyone with the link can listen" : "Public link turned off");
+        return p;
+      } catch (e) {
+        fail(shared ? "Could not create a public link" : "Could not turn the public link off")(e as Error);
+        return null;
+      }
+    },
+    [putPlaylist, notifyInfo, fail]
+  );
+
   // ---- History ----
 
   const refreshRecent = useCallback(() => {
@@ -393,10 +461,25 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  /** Re-reads the Home statistics (listening time / tracks change with every reported play). */
+  const refreshStats = useCallback(() => {
+    if (loadedForRef.current === "guest" || loadedForRef.current === null) return;
+    const forId = loadedForRef.current;
+    api
+      .getStats()
+      .then((stats) => {
+        if (loadedForRef.current === forId) setState((s) => ({ ...s, stats }));
+      })
+      .catch(() => {
+        /* keep the current numbers */
+      });
+  }, []);
+
   const historyChanged = useCallback(() => {
     setState((s) => ({ ...s, historyVersion: s.historyVersion + 1 }));
     refreshRecent();
-  }, [refreshRecent]);
+    refreshStats();
+  }, [refreshRecent, refreshStats]);
 
   const clearHistory = useCallback(async () => {
     if (!requireSignIn("keep a listening history")) return false;
@@ -438,6 +521,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       deletePlaylist,
       addToPlaylist,
       removeFromPlaylist,
+      setPlaylistDescription,
+      reorderPlaylist,
+      setPlaylistShared,
       historyChanged,
       clearHistory,
       dismissError,
@@ -457,6 +543,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     deletePlaylist,
     addToPlaylist,
     removeFromPlaylist,
+    setPlaylistDescription,
+    reorderPlaylist,
+    setPlaylistShared,
     historyChanged,
     clearHistory,
     dismissError,

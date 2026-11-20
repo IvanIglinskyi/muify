@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import type { Album } from "../types";
+import { ArtistLink } from "./ArtistLink";
 import { Cover } from "./Cover";
 import { HeartButton, KebabMenu, Logo } from "./common";
 
@@ -39,6 +40,7 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
         label={`More options for ${a.title}`}
         items={[
           { label: "Open album", onSelect: () => navigate(albumPath(a.id)) },
+          ...(a.artistId ? [{ label: "Go to artist", onSelect: () => navigate(`/artist/${encodeURIComponent(a.artistId!)}`) }] : []),
           { label: playing ? "Pause" : "Play album", onSelect: play, disabled: a.trackIds.length === 0 },
           {
             label: a.liked ? "Remove from favourites" : "Add to favourites",
@@ -49,7 +51,8 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
       <div className="album-card-text">
         <h3>{a.title}</h3>
         <p>
-          {a.artist} - {a.year}
+          <ArtistLink name={a.artist} id={a.artistId} />
+          {a.year ? ` - ${a.year}` : ""}
         </p>
       </div>
       <button

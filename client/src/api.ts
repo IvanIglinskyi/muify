@@ -2,6 +2,7 @@ import type {
   Album,
   AlbumSort,
   AlbumWithTracks,
+  ArtistDetails,
   CatalogStatus,
   CreatePlaylistBody,
   Genre,
@@ -12,12 +13,15 @@ import type {
   MeResponse,
   PlaybackState,
   Playlist,
+  Recommendations,
   ReportPlayBody,
   SavePlaybackBody,
+  SharedPlaylist,
   Stats,
   Track,
   TrackSort,
   UpdateMeBody,
+  UpdatePlaylistBody,
 } from "./types";
 
 export class ApiRequestError extends Error {
@@ -120,6 +124,15 @@ export const api = {
   getPlaylistTracks: (id: string) => request<Track[]>(`/api/playlists/${enc(id)}/tracks`),
   createPlaylist: (body: CreatePlaylistBody) => request<Playlist>("/api/playlists", json("POST", body)),
   renamePlaylist: (id: string, name: string) => request<Playlist>(`/api/playlists/${enc(id)}`, json("PATCH", { name })),
+  updatePlaylist: (id: string, body: UpdatePlaylistBody) => request<Playlist>(`/api/playlists/${enc(id)}`, json("PATCH", body)),
+  reorderPlaylist: (id: string, trackIds: string[]) =>
+    request<Playlist>(`/api/playlists/${enc(id)}/tracks`, json("PUT", { trackIds })),
+  sharePlaylist: (id: string) => request<Playlist>(`/api/playlists/${enc(id)}/share`, { method: "PUT" }),
+  unsharePlaylist: (id: string) => request<Playlist>(`/api/playlists/${enc(id)}/share`, { method: "DELETE" }),
+  getSharedPlaylist: (shareId: string, signal?: AbortSignal) =>
+    request<SharedPlaylist>(`/api/shared/${enc(shareId)}`, { signal }),
+  getArtist: (id: string, signal?: AbortSignal) => request<ArtistDetails>(`/api/artists/${enc(id)}`, { signal }),
+  getRecommendations: () => request<Recommendations>("/api/recommendations"),
   deletePlaylist: (id: string) => request<void>(`/api/playlists/${enc(id)}`, { method: "DELETE" }),
   addToPlaylist: (id: string, trackId: string) =>
     request<Playlist>(`/api/playlists/${enc(id)}/tracks`, json("POST", { trackId })),

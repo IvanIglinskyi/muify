@@ -4,6 +4,7 @@ import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import { playlistIcon } from "../lib/playlistIcons";
+import { ArtistLink } from "./ArtistLink";
 import { Cover } from "./Cover";
 import { HeartButton } from "./common";
 import { useNewPlaylist } from "./useTrackMenu";
@@ -102,22 +103,25 @@ export function Sidebar() {
             const isCurrent = current?.id === t.id;
             return (
               <li key={t.id} className={`recent-item${isCurrent ? " is-current" : ""}`}>
-                <button
-                  type="button"
-                  className="recent-main"
-                  onClick={() => playTrack(t.id, recentIds)}
-                  aria-label={`Play ${t.title} by ${t.artist}`}
-                  title={`${t.title} — ${t.artist}`}
-                >
-                  <span className="thumb">
-                    <Cover seed={t.id} src={t.coverUrl} />
-                    {isCurrent && isPlaying && <span className="eq" aria-hidden="true"><i /><i /><i /></span>}
-                  </span>
+                {/* The play button's hit area stretches over the row; the artist link sits above it. */}
+                <div className="recent-main">
+                  <button
+                    type="button"
+                    className="recent-play"
+                    onClick={() => playTrack(t.id, recentIds)}
+                    aria-label={`Play ${t.title} by ${t.artist}`}
+                    title={`${t.title} — ${t.artist}`}
+                  >
+                    <span className="thumb">
+                      <Cover seed={t.id} src={t.coverUrl} />
+                      {isCurrent && isPlaying && <span className="eq" aria-hidden="true"><i /><i /><i /></span>}
+                    </span>
+                  </button>
                   <span className="recent-text label">
-                    <span className="track-title">{t.title}</span>
-                    <span className="track-artist">{t.artist}</span>
+                    <span className="track-title" aria-hidden="true">{t.title}</span>
+                    <ArtistLink className="track-artist" name={t.artist} id={t.artistId} />
                   </span>
-                </button>
+                </div>
                 <HeartButton
                   className="label-like"
                   liked={t.liked}

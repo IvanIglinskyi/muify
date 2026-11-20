@@ -26,7 +26,13 @@ export interface StoredPlaylist {
   trackIds: string[];
   createdAt: string;
   updatedAt: string;
+  description?: string;
+  /** Public link id while sharing is on (see sharedPlaylists/ in RTDB). */
+  shareId?: string;
 }
+
+/** Shape of a public share id (random, URL-safe). */
+export const SHARE_ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
 
 export interface StoredPlayback {
   trackId: string;
@@ -114,13 +120,16 @@ const nowIso = () => new Date().toISOString();
 function parsePlaylist(id: string, p: unknown): StoredPlaylist | null {
   if (!isObj(p) || !isStr(p.name)) return null;
   const now = nowIso();
-  return {
+  const out: StoredPlaylist = {
     id,
     name: p.name,
     trackIds: [...new Set(strList(p.trackIds))],
     createdAt: isStr(p.createdAt) ? p.createdAt : now,
     updatedAt: isStr(p.updatedAt) ? p.updatedAt : now,
   };
+  if (isStr(p.description) && p.description.trim()) out.description = p.description;
+  if (isStr(p.shareId) && SHARE_ID_RE.test(p.shareId)) out.shareId = p.shareId;
+  return out;
 }
 
 function parsePlayback(pb: unknown): StoredPlayback | null {
@@ -276,6 +285,9 @@ const playlistValue = (p: StoredPlaylist) => ({
   trackIds: p.trackIds,
   createdAt: p.createdAt,
   updatedAt: p.updatedAt,
+  // Absent (not null) when unset: the whole node is replaced on every save.
+  ...(p.description ? { description: p.description } : {}),
+  ...(p.shareId ? { shareId: p.shareId } : {}),
 });
 
 const historyValue = (h: HistoryEntry) => ({ t: h.trackId, at: h.playedAt, s: h.seconds });
@@ -514,9 +526,20 @@ export function setDocHooks(h: DocHooks) {
 export interface UserStore {
   readonly kind: "file" | "firebase";
   get(uid: string): Promise<UserDoc>;
-  /** Deletes everything stored for `uid` (pending writes are dropped). */
+  /** Deletes everything stored for `uid` (pending writes are dropped), incl. their public links. */
   delete(uid: string): Promise<void>;
   flushAll(): Promise<void>;
+  /** Registers a public link (Firebase: sharedPlaylists/{shareId} → { ownerUid, playlistId }). */
+  putShare(shareId: string, uid: string, playlistId: string): Promise<void>;
+  removeShare(shareId: string): Promise<void>;
+  /** The playlist behind a public link, or null (unknown link, sharing turned off, owner gone). */
+  resolveShare(shareId: string): Promise<{ doc: UserDoc; playlist: StoredPlaylist } | null>;
+}
+
+/** The owner's playlist that currently carries `shareId` (the link only works while it does). */
+function sharedPlaylistOf(doc: UserDoc, shareId: string, playlistId?: string): StoredPlaylist | null {
+  if (doc.deleted) return null;
+  return doc.state.playlists.find((p) => p.shareId === shareId && (playlistId === undefined || p.id === playlistId)) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +683,15 @@ class FileUserStore implements UserStore, Backend {
     }
   }
 
+  // Local mode: the share id lives on the playlist itself — no separate index needed.
+  async putShare(): Promise<void> {}
+  async removeShare(): Promise<void> {}
+  async resolveShare(shareId: string): Promise<{ doc: UserDoc; playlist: StoredPlaylist } | null> {
+    const doc = await this.get(LOCAL_UID);
+    const playlist = sharedPlaylistOf(doc, shareId);
+    return playlist ? { doc, playlist } : null;
+  }
+
   async delete(): Promise<void> {
     // Local mode has no accounts; "delete" resets the local state.
     const doc = await this.get(LOCAL_UID);
@@ -679,6 +711,7 @@ const RTDB_DEBOUNCE_MS = 400;
 const RTDB_MAX_DELAY_MS = 3000;
 const IDLE_EVICT_MS = 30 * 60_000;
 const userPath = (uid: string) => `users/${encodeKey(uid)}`;
+const sharePath = (shareId: string) => `sharedPlaylists/${encodeKey(shareId)}`;
 
 class RtdbUserStore implements UserStore, Backend {
   readonly kind = "firebase" as const;
@@ -758,8 +791,29 @@ class RtdbUserStore implements UserStore, Backend {
     await Promise.all([...this.docs.values()].map((d) => this.flushDoc(d)));
   }
 
+  async putShare(shareId: string, uid: string, playlistId: string): Promise<void> {
+    const fb = await firebase();
+    await fb.db.update(sharePath(shareId), { ownerUid: uid, playlistId, createdAt: nowIso() });
+  }
+
+  async removeShare(shareId: string): Promise<void> {
+    const fb = await firebase();
+    await fb.db.remove(sharePath(shareId));
+  }
+
+  async resolveShare(shareId: string): Promise<{ doc: UserDoc; playlist: StoredPlaylist } | null> {
+    const fb = await firebase();
+    const ref = await fb.db.get(sharePath(shareId));
+    if (!isObj(ref) || !isStr(ref.ownerUid) || !isStr(ref.playlistId) || !ref.ownerUid) return null;
+    const doc = await this.get(ref.ownerUid);
+    const playlist = sharedPlaylistOf(doc, shareId, ref.playlistId);
+    return playlist ? { doc, playlist } : null;
+  }
+
   async delete(uid: string): Promise<void> {
-    const doc = this.docs.get(uid) ?? (await this.loading.get(uid)?.catch(() => undefined));
+    // Load the user first if needed: their public links must go too.
+    const doc = this.docs.get(uid) ?? (await this.loading.get(uid)?.catch(() => undefined)) ?? (await this.get(uid).catch(() => undefined));
+    const shareIds = doc ? doc.state.playlists.map((p) => p.shareId).filter((x): x is string => Boolean(x)) : [];
     if (doc) {
       doc.deleted = true;
       doc.pending.clear();
@@ -770,6 +824,7 @@ class RtdbUserStore implements UserStore, Backend {
     await this.inflight.get(uid);
     this.docs.delete(uid);
     const fb = await firebase();
+    await Promise.all(shareIds.map((id) => fb.db.remove(sharePath(id))));
     await fb.db.remove(userPath(uid));
   }
 

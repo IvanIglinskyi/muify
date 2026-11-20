@@ -1,4 +1,5 @@
-import { Bell, BellOff, Compass, Database, History, Home, LogIn, LogOut, Search, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { Bell, BellOff, Compass, Database, History, Home, Keyboard, LogIn, LogOut, Search, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { openShortcutsHelp } from "./KeyboardShortcuts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../store/AuthContext";
@@ -88,6 +89,16 @@ function SettingsMenu({ close }: { close: () => void }) {
           </p>
         </div>
       </div>
+      <button
+        type="button"
+        className="menu-action"
+        onClick={() => {
+          close();
+          openShortcutsHelp();
+        }}
+      >
+        <Keyboard size={16} aria-hidden="true" /> Keyboard shortcuts <kbd className="menu-kbd">?</kbd>
+      </button>
       {canSave && (
         <button type="button" className="menu-action is-danger" onClick={onClear}>
           <History size={16} aria-hidden="true" /> Clear history

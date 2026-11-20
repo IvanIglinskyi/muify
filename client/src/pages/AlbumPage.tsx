@@ -2,6 +2,7 @@ import { ArrowLeft, Disc3, ExternalLink, Shuffle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiRequestError, api } from "../api";
+import { ArtistLink } from "../components/ArtistLink";
 import { Cover } from "../components/Cover";
 import { HeartButton } from "../components/common";
 import { TrackTable } from "../components/TrackTable";
@@ -118,7 +119,7 @@ export function AlbumPage() {
             {album.title}
           </h1>
           <p className="album-hero-artist">
-            {album.artist}
+            <ArtistLink name={album.artist} id={album.artistId} />
             {album.year ? ` - ${album.year}` : ""}
           </p>
           <p className="meta">

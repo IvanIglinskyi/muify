@@ -37,6 +37,8 @@ interface PlayerApi {
   next: () => void;
   prev: () => void;
   seek: (seconds: number) => void;
+  /** Relative seek (keyboard shortcuts): +5 / -5 seconds. */
+  seekBy: (deltaSeconds: number) => void;
   setVolume: (v: number) => void;
   toggleMute: () => void;
   toggleShuffle: () => void;
@@ -448,6 +450,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [audio]
   );
 
+  const seekBy = useCallback(
+    (delta: number) => {
+      if (!stateRef.current.currentId) return;
+      seek(stateRef.current.position + delta);
+    },
+    [seek]
+  );
+
   const prev = useCallback(() => {
     if (stateRef.current.position > 3) seek(0);
     else step(-1, false);
@@ -627,6 +637,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       next,
       prev,
       seek,
+      seekBy,
       setVolume,
       toggleMute,
       toggleShuffle,
@@ -636,7 +647,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       removeFromQueue,
       clearUpNext,
     }),
-    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, setVolume, toggleMute, toggleShuffle, cycleRepeat, playNext, addToQueue, removeFromQueue, clearUpNext]
+    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, seekBy, setVolume, toggleMute, toggleShuffle, cycleRepeat, playNext, addToQueue, removeFromQueue, clearUpNext]
   );
 
   return (

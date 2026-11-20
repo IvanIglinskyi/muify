@@ -26,6 +26,8 @@ export interface Track {
   shareUrl?: string;
   /** Album the track belongs to (when known), for "Go to album". */
   albumId?: string;
+  /** Artist page id ("jr123" Jamendo, "sa-name" seed); absent on old snapshots. */
+  artistId?: string;
 }
 
 export type CatalogSource = "jamendo" | "seed";
@@ -74,6 +76,8 @@ export interface Album {
   jamendoId?: string;
   /** Album page on jamendo.com. */
   shareUrl?: string;
+  /** Artist page id (see Track.artistId). */
+  artistId?: string;
 }
 
 export interface AlbumWithTracks extends Album {
@@ -92,6 +96,71 @@ export interface Playlist {
   icon?: "heart";
   kind: PlaylistKind;
   trackIds: string[];
+  /** Optional description (user playlists). */
+  description?: string;
+  /** Public read-only link id (user playlists with sharing on), else null/absent. */
+  shareId?: string | null;
+}
+
+/** PATCH /api/playlists/:id — at least one field. `description: ""` (or null) clears it. */
+export interface UpdatePlaylistBody {
+  name?: string;
+  description?: string | null;
+}
+
+/** PUT /api/playlists/:id/tracks — the playlist's tracks in their new order. */
+export interface ReorderPlaylistBody {
+  trackIds: string[];
+}
+
+/** GET /api/shared/:shareId — a public, read-only view of a shared user playlist. */
+export interface SharedPlaylist {
+  shareId: string;
+  name: string;
+  description: string | null;
+  /** Owner's display name (never the email), or null. */
+  ownerName: string | null;
+  /** True when the caller owns the playlist. */
+  ownedByYou: boolean;
+  /** The owner's playlist id (only when `ownedByYou`). */
+  playlistId: string | null;
+  trackIds: string[];
+  tracks: Track[];
+  updatedAt: string;
+}
+
+export interface Artist {
+  id: string;
+  name: string;
+  source: CatalogSource;
+  /** Artist photo (Jamendo); when absent the client draws a generated cover. */
+  imageUrl?: string;
+  /** Artist page on jamendo.com. */
+  shareUrl?: string;
+  website?: string;
+  /** ISO date the artist joined Jamendo. */
+  joinDate?: string;
+}
+
+/** GET /api/artists/:id */
+export interface ArtistDetails extends Artist {
+  /** Most popular tracks first. */
+  topTracks: Track[];
+  /** Newest first. */
+  albums: AlbumWithTracks[];
+}
+
+/** GET /api/recommendations */
+export interface Recommendations {
+  dailyMix: {
+    /** Built from the listener's likes and plays (false: the generic mix for everyone). */
+    personalised: boolean;
+    tracks: Track[];
+    /** Artist names the mix is based on (empty when generic). */
+    basedOn: string[];
+  };
+  /** "Because you liked <artist>" row, or null when there isn't enough data. */
+  becauseYouLiked: { artist: { id: string | null; name: string }; tracks: Track[] } | null;
 }
 
 /** POST /api/playlists */
@@ -134,7 +203,7 @@ export interface ListeningStats {
   likedAlbums: number;
   firstPlayedAt: string | null;
   topTracks: { track: Track; plays: number; seconds: number }[];
-  topArtists: { artist: string; plays: number; seconds: number }[];
+  topArtists: { artist: string; artistId: string | null; plays: number; seconds: number }[];
   /** Oldest → newest, local server dates (YYYY-MM-DD). */
   last7Days: { date: string; seconds: number; plays: number }[];
 }
@@ -190,10 +259,16 @@ export interface UpdateMeBody {
   usePhoto?: boolean;
 }
 
+/** GET /api/stats — the Home statistics tiles, computed from the caller's own data. */
 export interface Stats {
-  totalHours: number;
+  /** Seconds listened (sum of the play history). */
+  totalSeconds: number;
+  /** Liked tracks + liked albums. */
   likes: number;
+  /** Distinct tracks played. */
   tracks: number;
+  /** Reported plays. */
+  plays: number;
 }
 
 export interface PlaybackState {

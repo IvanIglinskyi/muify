@@ -2,6 +2,7 @@ import { ArrowLeft, BarChart3, Clock, Headphones, Heart, Mic2, PlayCircle } from
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { ArtistLink } from "../components/ArtistLink";
 import { TrackTable } from "../components/TrackTable";
 import { formatListening, formatNumber } from "../lib/format";
 import { useLibrary } from "../store/LibraryContext";
@@ -150,7 +151,7 @@ export function StatsPage() {
                     <span className="artist-icon" aria-hidden="true">
                       <Mic2 size={16} />
                     </span>
-                    <span className="artist-name">{a.artist}</span>
+                    <ArtistLink className="artist-name" name={a.artist} id={a.artistId} />
                     <span className="artist-meta">
                       {a.plays} play{a.plays === 1 ? "" : "s"} · {formatListening(a.seconds)}
                     </span>

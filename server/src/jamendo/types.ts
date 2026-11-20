@@ -77,3 +77,14 @@ export interface JamendoAlbum {
   /** Present on /albums/tracks only. */
   tracks?: JamendoAlbumTrack[];
 }
+
+/** GET /artists result item. */
+export interface JamendoArtist {
+  id: string;
+  name: string;
+  website?: string;
+  joindate?: string;
+  image?: string;
+  shorturl?: string;
+  shareurl?: string;
+}

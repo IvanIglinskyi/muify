@@ -101,6 +101,10 @@ export function useTrackMenu() {
         const albumId = t.albumId;
         items.push({ label: "Go to album", onSelect: () => navigate(`/album/${encodeURIComponent(albumId)}`) });
       }
+      if (t.artistId) {
+        const artistId = t.artistId;
+        items.push({ label: "Go to artist", onSelect: () => navigate(`/artist/${encodeURIComponent(artistId)}`) });
+      }
       items.push({ label: t.liked ? "Remove from favourites" : "Add to favourites", onSelect: () => toggleTrackLike(t.id) });
       const p = o.playlistId ? playlists.find((x) => x.id === o.playlistId) : undefined;
       // (On Favourites, "Remove from favourites" above already does this.)

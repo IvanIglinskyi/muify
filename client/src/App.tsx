@@ -4,11 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { DialogProvider } from "./components/Dialogs";
 import { Header } from "./components/Header";
+import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { PlayerBar } from "./components/PlayerBar";
 import { QueuePanel } from "./components/QueuePanel";
 import { Sidebar } from "./components/Sidebar";
 import { AccountPage } from "./pages/AccountPage";
 import { AlbumPage } from "./pages/AlbumPage";
+import { ArtistPage } from "./pages/ArtistPage";
 import { LoginPage, RequireAuth, ResetPasswordPage, SignupPage } from "./pages/AuthPages";
 import { ExplorePage } from "./pages/ExplorePage";
 import { HomePage } from "./pages/HomePage";
@@ -21,6 +23,7 @@ import {
   PlaylistsTab,
 } from "./pages/LibraryPage";
 import { PlansPage } from "./pages/PlansPage";
+import { SharedPlaylistPage } from "./pages/SharedPlaylistPage";
 import type { ShellContext } from "./pages/shell";
 import { StatsPage } from "./pages/StatsPage";
 import { WeekAlbumsPage } from "./pages/WeekAlbumsPage";
@@ -157,6 +160,8 @@ function searchFor(pathname: string): { label: string; submitTo?: string } {
   if (pathname.startsWith("/library")) return { label: "Search your library" };
   if (pathname.startsWith("/album/")) return { label: "Search tracks in this album" };
   if (pathname.startsWith("/albums/week")) return { label: "Search albums of the week" };
+  if (pathname.startsWith("/artist/")) return { label: "Search this artist's top tracks" };
+  if (pathname.startsWith("/p/")) return { label: "Search tracks in this playlist" };
   if (pathname === "/") return { label: "Search tracks in Daily Mix (Enter searches all music)", submitTo: "/explore" };
   return { label: "Search all music (press Enter)", submitTo: "/explore" };
 }
@@ -202,6 +207,7 @@ function Shell() {
       <QueuePanel open={queueOpen} onClose={closeQueue} />
       <PlayerBar queueOpen={queueOpen} onToggleQueue={() => setQueueOpen((o) => !o)} />
       <Toasts />
+      <KeyboardShortcuts />
     </div>
   );
 }
@@ -230,6 +236,8 @@ export default function App() {
                 <Route index element={<HomePage />} />
                 <Route path="explore" element={<ExplorePage />} />
                 <Route path="album/:id" element={<AlbumPage />} />
+                <Route path="artist/:id" element={<ArtistPage />} />
+                <Route path="p/:shareId" element={<SharedPlaylistPage />} />
                 <Route path="albums/week" element={<WeekAlbumsPage />} />
                 <Route
                   path="stats"
