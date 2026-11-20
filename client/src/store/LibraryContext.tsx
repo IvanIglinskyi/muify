@@ -16,6 +16,8 @@ export const FAVOURITES_ID = "p-favourites";
 interface LibraryState {
   loading: boolean;
   error: string | null;
+  /** Non-error feedback ("Added to …"), shown in a short-lived toast. */
+  info: string | null;
   /** Single source of truth for tracks, so likes stay in sync everywhere. */
   tracks: Record<string, Track>;
   /** Single source of truth for albums (insertion-ordered). */
@@ -27,6 +29,8 @@ interface LibraryState {
   playlists: Playlist[];
   stats: Stats | null;
   lastPlayback: PlaybackState | null;
+  /** Bumped whenever the play history changes (pages showing history/stats refetch). */
+  historyVersion: number;
 }
 
 interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumIds"> {
@@ -36,6 +40,8 @@ interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumId
   likedAlbums: Album[];
   /** Liked track ids in like order (mirrors the Favourites playlist), live. */
   likedTrackIds: string[];
+  /** Playlists the listener created (editable). */
+  userPlaylists: Playlist[];
   toggleTrackLike: (id: string) => void;
   toggleAlbumLike: (id: string) => void;
   loadPlaylistTracks: (id: string) => Promise<string[]>;
@@ -43,9 +49,20 @@ interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumId
   mergeTracks: (list: Track[]) => string[];
   /** Adds albums (and their tracks) to the shared index; returns their ids. */
   mergeAlbums: (list: AlbumWithTracks[]) => string[];
+  createPlaylist: (name: string, trackIds?: string[]) => Promise<Playlist | null>;
+  renamePlaylist: (id: string, name: string) => Promise<boolean>;
+  deletePlaylist: (id: string) => Promise<boolean>;
+  addToPlaylist: (playlistId: string, trackId: string) => Promise<void>;
+  removeFromPlaylist: (playlistId: string, trackId: string) => Promise<void>;
+  /** Called by the player after a play was reported: refreshes Recent Plays & history views. */
+  historyChanged: () => void;
+  clearHistory: () => Promise<boolean>;
   dismissError: () => void;
-  /** Shows a message in the app toast (e.g. playback errors). */
+  dismissInfo: () => void;
+  /** Shows a message in the error toast (e.g. playback errors). */
   notify: (message: string) => void;
+  /** Shows a short confirmation toast. */
+  notifyInfo: (message: string) => void;
 }
 
 const LibraryContext = createContext<LibraryApi | null>(null);
@@ -53,6 +70,7 @@ const LibraryContext = createContext<LibraryApi | null>(null);
 const initialState: LibraryState = {
   loading: true,
   error: null,
+  info: null,
   tracks: {},
   albums: {},
   albumOfTheDayId: null,
@@ -62,6 +80,7 @@ const initialState: LibraryState = {
   playlists: [],
   stats: null,
   lastPlayback: null,
+  historyVersion: 0,
 };
 
 /**
@@ -101,9 +120,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       .then(([day, week, playlists, recent, mix, stats, last, likedTracks, likedAlbums]) => {
         if (cancelled) return;
         const allAlbums = [day, ...week, ...likedAlbums];
-        const allTracks = [...allAlbums.flatMap((a) => a.tracks), ...recent, ...mix, ...likedTracks, last.track];
+        const allTracks = [
+          ...allAlbums.flatMap((a) => a.tracks),
+          ...recent,
+          ...mix,
+          ...likedTracks,
+          last.track,
+          ...last.queueTracks,
+        ];
         // Merge (not replace): a page such as Explore may already have added items to the index.
         setState((s) => ({
+          ...s,
           loading: false,
           error: null,
           tracks: addNew(s.tracks, allTracks),
@@ -125,6 +152,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const notify = useCallback((message: string) => setState((s) => ({ ...s, error: message })), []);
+  const notifyInfo = useCallback((message: string) => setState((s) => ({ ...s, info: message })), []);
+  const fail = useCallback((what: string) => (e: Error) => notify(`${what}: ${e.message}`), [notify]);
+
   /** Applies a like flip locally (track + Favourites playlist + Likes stat). */
   const applyTrackLike = useCallback((id: string, liked: boolean) => {
     setState((s) => {
@@ -143,18 +174,28 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const setTrackLike = useCallback(
+    (id: string, liked: boolean) => {
+      const track = stateRef.current.tracks[id];
+      if (!track || track.liked === liked) return Promise.resolve();
+      applyTrackLike(id, liked); // optimistic
+      return api.likeTrack(id, liked).then(
+        () => undefined,
+        (e: Error) => {
+          applyTrackLike(id, !liked); // roll back
+          notify(`Could not update like: ${e.message}`);
+        }
+      );
+    },
+    [applyTrackLike, notify]
+  );
+
   const toggleTrackLike = useCallback(
     (id: string) => {
       const track = stateRef.current.tracks[id];
-      if (!track) return;
-      const liked = !track.liked;
-      applyTrackLike(id, liked); // optimistic
-      api.likeTrack(id, liked).catch((e: Error) => {
-        applyTrackLike(id, !liked); // roll back
-        setState((s) => ({ ...s, error: `Could not update like: ${e.message}` }));
-      });
+      if (track) void setTrackLike(id, !track.liked);
     },
-    [applyTrackLike]
+    [setTrackLike]
   );
 
   const applyAlbumLike = useCallback((id: string, liked: boolean) => {
@@ -177,10 +218,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       applyAlbumLike(id, liked);
       api.likeAlbum(id, liked).catch((e: Error) => {
         applyAlbumLike(id, !liked);
-        setState((st) => ({ ...st, error: `Could not update like: ${e.message}` }));
+        notify(`Could not update like: ${e.message}`);
       });
     },
-    [applyAlbumLike]
+    [applyAlbumLike, notify]
   );
 
   const mergeTracks = useCallback((list: Track[]) => {
@@ -205,8 +246,127 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [mergeTracks]
   );
 
+  // ---- User playlists ----
+
+  const putPlaylist = useCallback((p: Playlist) => {
+    setState((s) => ({ ...s, playlists: s.playlists.map((x) => (x.id === p.id ? p : x)) }));
+  }, []);
+
+  const createPlaylist = useCallback(
+    async (name: string, trackIds: string[] = []) => {
+      try {
+        const p = await api.createPlaylist({ name, trackIds });
+        setState((s) => ({ ...s, playlists: [...s.playlists, p] }));
+        notifyInfo(trackIds.length ? `Created “${p.name}” and added the track` : `Created “${p.name}”`);
+        return p;
+      } catch (e) {
+        fail("Could not create playlist")(e as Error);
+        return null;
+      }
+    },
+    [notifyInfo, fail]
+  );
+
+  const renamePlaylist = useCallback(
+    async (id: string, name: string) => {
+      try {
+        putPlaylist(await api.renamePlaylist(id, name));
+        return true;
+      } catch (e) {
+        fail("Could not rename playlist")(e as Error);
+        return false;
+      }
+    },
+    [putPlaylist, fail]
+  );
+
+  const deletePlaylist = useCallback(
+    async (id: string) => {
+      const name = stateRef.current.playlists.find((p) => p.id === id)?.name ?? "Playlist";
+      try {
+        await api.deletePlaylist(id);
+        setState((s) => ({ ...s, playlists: s.playlists.filter((p) => p.id !== id) }));
+        notifyInfo(`Deleted “${name}”`);
+        return true;
+      } catch (e) {
+        fail("Could not delete playlist")(e as Error);
+        return false;
+      }
+    },
+    [notifyInfo, fail]
+  );
+
+  const addToPlaylist = useCallback(
+    async (playlistId: string, trackId: string) => {
+      if (playlistId === FAVOURITES_ID) return setTrackLike(trackId, true);
+      const p = stateRef.current.playlists.find((x) => x.id === playlistId);
+      if (!p) return;
+      if (p.trackIds.includes(trackId)) {
+        notifyInfo(`Already in “${p.name}”`);
+        return;
+      }
+      putPlaylist({ ...p, trackIds: [...p.trackIds, trackId] }); // optimistic
+      try {
+        putPlaylist(await api.addToPlaylist(playlistId, trackId));
+        notifyInfo(`Added to “${p.name}”`);
+      } catch (e) {
+        const now = stateRef.current.playlists.find((x) => x.id === playlistId);
+        if (now) putPlaylist({ ...now, trackIds: now.trackIds.filter((x) => x !== trackId) });
+        fail("Could not add to playlist")(e as Error);
+      }
+    },
+    [setTrackLike, putPlaylist, notifyInfo, fail]
+  );
+
+  const removeFromPlaylist = useCallback(
+    async (playlistId: string, trackId: string) => {
+      if (playlistId === FAVOURITES_ID) return setTrackLike(trackId, false);
+      const p = stateRef.current.playlists.find((x) => x.id === playlistId);
+      if (!p) return;
+      putPlaylist({ ...p, trackIds: p.trackIds.filter((x) => x !== trackId) }); // optimistic
+      try {
+        putPlaylist(await api.removeFromPlaylist(playlistId, trackId));
+        notifyInfo(`Removed from “${p.name}”`);
+      } catch (e) {
+        putPlaylist(p);
+        fail("Could not remove from playlist")(e as Error);
+      }
+    },
+    [setTrackLike, putPlaylist, notifyInfo, fail]
+  );
+
+  // ---- History ----
+
+  const refreshRecent = useCallback(() => {
+    api
+      .getRecentTracks()
+      .then((recent) => {
+        setState((s) => ({ ...s, tracks: addNew(s.tracks, recent), recentIds: recent.map((t) => t.id) }));
+      })
+      .catch(() => {
+        /* keep the current list */
+      });
+  }, []);
+
+  const historyChanged = useCallback(() => {
+    setState((s) => ({ ...s, historyVersion: s.historyVersion + 1 }));
+    refreshRecent();
+  }, [refreshRecent]);
+
+  const clearHistory = useCallback(async () => {
+    try {
+      const { cleared } = await api.clearHistory();
+      historyChanged();
+      notifyInfo(cleared ? `Cleared ${cleared} play${cleared === 1 ? "" : "s"} from history` : "History is already empty");
+      return true;
+    } catch (e) {
+      fail("Could not clear history")(e as Error);
+      return false;
+    }
+  }, [historyChanged, notifyInfo, fail]);
+
   const dismissError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
-  const notify = useCallback((message: string) => setState((s) => ({ ...s, error: message })), []);
+  const dismissInfo = useCallback(() => setState((s) => ({ ...s, info: null })), []);
 
   const value = useMemo<LibraryApi>(() => {
     const { albumOfTheDayId, weekAlbumIds, ...rest } = state;
@@ -221,15 +381,43 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         Object.values(state.tracks)
           .filter((t) => t.liked)
           .map((t) => t.id),
+      userPlaylists: state.playlists.filter((p) => p.kind === "user"),
       toggleTrackLike,
       toggleAlbumLike,
       loadPlaylistTracks,
       mergeTracks,
       mergeAlbums,
+      createPlaylist,
+      renamePlaylist,
+      deletePlaylist,
+      addToPlaylist,
+      removeFromPlaylist,
+      historyChanged,
+      clearHistory,
       dismissError,
+      dismissInfo,
       notify,
+      notifyInfo,
     };
-  }, [state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, mergeTracks, mergeAlbums, dismissError, notify]);
+  }, [
+    state,
+    toggleTrackLike,
+    toggleAlbumLike,
+    loadPlaylistTracks,
+    mergeTracks,
+    mergeAlbums,
+    createPlaylist,
+    renamePlaylist,
+    deletePlaylist,
+    addToPlaylist,
+    removeFromPlaylist,
+    historyChanged,
+    clearHistory,
+    dismissError,
+    dismissInfo,
+    notify,
+    notifyInfo,
+  ]);
 
   return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>;
 }

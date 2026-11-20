@@ -1,3 +1,5 @@
+import { Pause, Play } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import type { Album } from "../types";
@@ -11,25 +13,33 @@ interface AlbumCardProps {
   showLike?: boolean;
 }
 
-/** Full-bleed album card (Albums of the Week style); clicking plays the album. */
+export const albumPath = (id: string) => `/album/${encodeURIComponent(id)}`;
+
+/** Full-bleed album card (Albums of the Week style): the card opens the album page, the round button plays it. */
 export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
   const { toggleAlbumLike } = useLibrary();
-  const { current, isPlaying, playTrack } = usePlayer();
-  const playing = isPlaying && !!current && a.trackIds.includes(current.id);
-  const play = () => a.trackIds.length && playTrack(a.trackIds[0], a.trackIds);
+  const { current, isPlaying, playTrack, togglePlay } = usePlayer();
+  const navigate = useNavigate();
+  const fromHere = !!current && a.trackIds.includes(current.id);
+  const playing = isPlaying && fromHere;
+  const play = () => {
+    if (fromHere) togglePlay();
+    else if (a.trackIds.length) playTrack(a.trackIds[0], a.trackIds);
+  };
 
   return (
     <li
       className={`album-card${playing ? " is-playing" : ""}${showLike ? " has-like" : ""}${className ? ` ${className}` : ""}`}
     >
       <Cover seed={a.id} src={a.coverUrl} />
-      <button type="button" className="album-card-hit" onClick={play} aria-label={`Play album ${a.title} by ${a.artist}`} />
+      <Link to={albumPath(a.id)} className="album-card-hit" aria-label={`Open album ${a.title} by ${a.artist}`} />
       <Logo className="logo-xs" />
       <KebabMenu
         className="album-kebab"
         label={`More options for ${a.title}`}
         items={[
-          { label: "Play album", onSelect: play },
+          { label: "Open album", onSelect: () => navigate(albumPath(a.id)) },
+          { label: playing ? "Pause" : "Play album", onSelect: play, disabled: a.trackIds.length === 0 },
           {
             label: a.liked ? "Remove from favourites" : "Add to favourites",
             onSelect: () => toggleAlbumLike(a.id),
@@ -42,6 +52,15 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
           {a.artist} - {a.year}
         </p>
       </div>
+      <button
+        type="button"
+        className="play-circle album-card-play"
+        onClick={play}
+        disabled={a.trackIds.length === 0}
+        aria-label={playing ? `Pause ${a.title}` : `Play album ${a.title} by ${a.artist}`}
+      >
+        {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+      </button>
       {showLike && (
         <HeartButton className="album-like" liked={a.liked} label={a.title} onToggle={() => toggleAlbumLike(a.id)} />
       )}

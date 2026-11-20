@@ -1,11 +1,12 @@
-import { Home, Library, LucideIcon, Search } from "lucide-react";
+import { Home, Library, LucideIcon, Plus, Search } from "lucide-react";
 import { useState } from "react";
-import { NavLink } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import { playlistIcon } from "../lib/playlistIcons";
 import { Cover } from "./Cover";
 import { HeartButton } from "./common";
+import { useNewPlaylist } from "./useTrackMenu";
 
 const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: "/", label: "Home", icon: Home, end: true },
@@ -19,9 +20,11 @@ export function Sidebar() {
   const { playlists, recentIds, tracks, toggleTrackLike, loadPlaylistTracks } = useLibrary();
   const { current, isPlaying, playTrack } = usePlayer();
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
-  const [showAllRecent, setShowAllRecent] = useState(false);
+  const navigate = useNavigate();
+  const newPlaylist = useNewPlaylist();
 
-  const recent = (showAllRecent ? recentIds : recentIds.slice(0, RECENT_PREVIEW))
+  const recent = recentIds
+    .slice(0, RECENT_PREVIEW)
     .map((id) => tracks[id])
     .filter(Boolean);
 
@@ -30,9 +33,16 @@ export function Sidebar() {
     try {
       const ids = await loadPlaylistTracks(id);
       if (ids.length) playTrack(ids[0], ids);
+      // An empty (new) playlist has nothing to play: open it instead.
+      else navigate(`/library/playlists/${encodeURIComponent(id)}`);
     } catch {
       /* error surfaced by network layer; nothing to play */
     }
+  };
+
+  const create = async () => {
+    const p = await newPlaylist();
+    if (p) navigate(`/library/playlists/${encodeURIComponent(p.id)}`);
   };
 
   return (
@@ -53,9 +63,14 @@ export function Sidebar() {
       </nav>
 
       <section className="sidebar-section" aria-labelledby="my-playlist-title">
-        <h2 id="my-playlist-title" className="sidebar-title">
-          My Playlist
-        </h2>
+        <div className="sidebar-title-row">
+          <h2 id="my-playlist-title" className="sidebar-title">
+            My Playlist
+          </h2>
+          <button type="button" className="icon-btn add-btn" aria-label="Create playlist" title="Create playlist" onClick={create}>
+            <Plus size={16} />
+          </button>
+        </div>
         <ul className="playlist-box">
           {playlists.map((p) => {
             const Icon = playlistIcon(p.id);
@@ -113,11 +128,9 @@ export function Sidebar() {
             );
           })}
         </ul>
-        {recentIds.length > RECENT_PREVIEW && (
-          <button type="button" className="link-btn see-all" onClick={() => setShowAllRecent((v) => !v)}>
-            {showAllRecent ? "Show less" : "See All"}
-          </button>
-        )}
+        <Link to="/library/history" className="link-btn see-all" aria-label="See all recent plays (listening history)">
+          See All
+        </Link>
       </section>
     </aside>
   );

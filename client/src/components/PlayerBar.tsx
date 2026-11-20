@@ -1,5 +1,6 @@
 import {
   ExternalLink,
+  ListMusic,
   LoaderCircle,
   Pause,
   Play,
@@ -40,7 +41,7 @@ function Progress() {
   );
 }
 
-export function PlayerBar() {
+export function PlayerBar({ queueOpen, onToggleQueue }: { queueOpen: boolean; onToggleQueue: () => void }) {
   const { toggleTrackLike } = useLibrary();
   const p = usePlayer();
   const track = p.current;
@@ -124,6 +125,16 @@ export function PlayerBar() {
           onClick={p.cycleRepeat}
         >
           <RepeatIcon size={20} />
+        </button>
+        <button
+          type="button"
+          className={`icon-btn queue-btn${queueOpen ? " is-on" : ""}`}
+          aria-label="Queue"
+          title="Queue"
+          aria-expanded={queueOpen}
+          onClick={onToggleQueue}
+        >
+          <ListMusic size={20} />
         </button>
       </div>
 

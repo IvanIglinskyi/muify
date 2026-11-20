@@ -1,7 +1,9 @@
 import { Pause, Play } from "lucide-react";
+import { Link } from "react-router-dom";
 import { formatLongDuration } from "../lib/format";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
+import { albumPath } from "./AlbumCard";
 import { Cover } from "./Cover";
 import { HeartButton, Logo } from "./common";
 
@@ -56,6 +58,8 @@ export function AlbumOfTheDay() {
 
       <div className="album-day-cover">
         <Cover seed={album.id} src={album.coverUrl} />
+        {/* The cover opens the album; the round button on top of it plays. */}
+        <Link to={albumPath(album.id)} className="album-day-cover-link" aria-label={`Open album ${album.title}`} />
         <button
           type="button"
           className="play-circle"
@@ -68,7 +72,11 @@ export function AlbumOfTheDay() {
 
       <div className="album-day-foot">
         <div>
-          <h3 className="album-day-title">{album.title}</h3>
+          <h3 className="album-day-title">
+            <Link to={albumPath(album.id)} className="plain-link">
+              {album.title}
+            </Link>
+          </h3>
           <p className="meta">
             {album.artist} - {album.year}
           </p>

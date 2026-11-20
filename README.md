@@ -15,6 +15,6 @@ npm run build         # перевірка типів і збірка обох �
 ## Структура
 
 - `client/` — React-застосунок (компоненти в `src/components`, стан у `src/store`).
-- `server/` — Express API (`/api/albums`, `/api/playlists`, `/api/tracks`, `/api/stats`, `/api/player`). Дані зберігаються в пам'яті.
+- `server/` — Express API (`/api/albums`, `/api/playlists`, `/api/tracks`, `/api/history`, `/api/stats`, `/api/player`). Каталог (seed або Jamendo) — у пам'яті; стан користувача (лайки, власні плейлисти, історія прослуховувань, остання позиція/трек/гучність) зберігається у `server/data-store/user-state.json` (у `.gitignore`; атомарний запис, debounce). Інший каталог можна задати змінною `MUIFY_DATA_DIR`.
 - `design/` — макет.
 - `.claude/agents/muify-builder.md` — Claude Code агент для розробки платформи за макетом.

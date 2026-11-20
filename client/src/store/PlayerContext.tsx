@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { api } from "../api";
 import type { Track } from "../types";
 import { useLibrary } from "./LibraryContext";
 
@@ -39,6 +40,13 @@ interface PlayerApi {
   toggleMute: () => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
+  /** Puts `id` right after the current track (moving it if it is already queued). */
+  playNext: (id: string) => void;
+  /** Appends `id` to the end of the queue (moving it if it is already queued). */
+  addToQueue: (id: string) => void;
+  removeFromQueue: (id: string) => void;
+  /** Removes every track after the current one. */
+  clearUpNext: () => void;
 }
 
 const PlayerContext = createContext<PlayerApi | null>(null);
@@ -47,6 +55,25 @@ const PositionContext = createContext<number>(0);
 
 /** Simulated clock step for tracks without audio. */
 const TICK_MS = 250;
+/** A play counts for the history after this many seconds of listening (or when the track ends). */
+const PLAY_THRESHOLD_S = 10;
+/** While playing, the position is saved this often (plus on pause / track change / pagehide). */
+const SAVE_EVERY_MS = 15_000;
+
+/** One continuous listen of one track, reported to /api/history. */
+interface ListenSession {
+  trackId: string;
+  /** Seconds actually listened (not the position: seeking doesn't count). */
+  listened: number;
+  /** History entry id once the play has been reported. */
+  entryId: string | null;
+  /** Seconds included in the last report. */
+  reported: number;
+  /** A create request is in flight. */
+  creating: boolean;
+  /** The session ended while the create request was in flight: send the final seconds afterwards. */
+  closed: boolean;
+}
 
 const validDuration = (d: number) => (Number.isFinite(d) && d > 0 ? d : null);
 
@@ -55,7 +82,7 @@ const validDuration = (d: number) => (Number.isFinite(d) && d > 0 ? d : null);
  * created once here (never rendered), so playback survives route changes.
  */
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { tracks, lastPlayback, notify } = useLibrary();
+  const { tracks, lastPlayback, notify, historyChanged } = useLibrary();
   const [audio] = useState(() => {
     const a = new Audio();
     a.preload = "auto";
@@ -78,11 +105,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const mode: PlaybackMode | null = current ? (src ? "audio" : "simulated") : null;
   const duration = (src ? metaDuration : null) ?? current?.duration ?? 0;
 
-  // Restore a "last played" track once the library has loaded (paused).
+  // Restore the last track, position, queue and volume once the library has loaded (paused —
+  // never autoplay).
+  const restoredRef = useRef(false);
   useEffect(() => {
-    if (currentId || !lastPlayback) return;
+    if (restoredRef.current || !lastPlayback) return;
+    restoredRef.current = true;
+    if (Number.isFinite(lastPlayback.volume)) setVolumeState(Math.min(1, Math.max(0, lastPlayback.volume)));
+    if (currentId) return; // the listener already picked something while the library loaded
     setCurrentId(lastPlayback.trackId);
-    setQueue(lastPlayback.queue);
+    setQueue(lastPlayback.queue.length ? lastPlayback.queue : [lastPlayback.trackId]);
     setPosition(Math.max(0, Math.min(lastPlayback.position, lastPlayback.track.duration - 1)));
   }, [currentId, lastPlayback]);
 
@@ -107,8 +139,89 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
   }, [audio]);
 
+  // ---- Play history ----
+
+  const sessionRef = useRef<ListenSession | null>(null);
+  const historyChangedRef = useRef(historyChanged);
+  historyChangedRef.current = historyChanged;
+
+  const createEntry = useCallback((session: ListenSession) => {
+    session.creating = true;
+    const seconds = Math.round(session.listened);
+    api
+      .reportPlay({ trackId: session.trackId, seconds })
+      .then((entry) => {
+        session.entryId = entry.id;
+        session.reported = seconds;
+        historyChangedRef.current();
+        if (session.closed && session.listened > session.reported + 1) {
+          void api.reportPlay({ trackId: session.trackId, seconds: Math.round(session.listened), entryId: entry.id });
+        }
+      })
+      .catch(() => {
+        /* history is best-effort */
+      })
+      .finally(() => {
+        session.creating = false;
+      });
+  }, []);
+
+  /**
+   * Ends the current listen: reports it if it qualifies (>= 10 s, or the track ended), or
+   * updates the listened seconds of an already reported play. `beacon` = page is going away.
+   */
+  const closeSession = useCallback(
+    (ended: boolean, beacon = false) => {
+      const session = sessionRef.current;
+      sessionRef.current = null;
+      if (!session) return;
+      session.closed = true;
+      const seconds = Math.round(session.listened);
+      if (session.entryId) {
+        if (seconds > session.reported) {
+          const body = { trackId: session.trackId, seconds, entryId: session.entryId };
+          if (beacon) api.reportPlayBeacon(body);
+          else void api.reportPlay(body).then(() => historyChangedRef.current(), () => {});
+          session.reported = seconds;
+        }
+      } else if (!session.creating && (seconds >= PLAY_THRESHOLD_S || (ended && seconds > 0))) {
+        if (beacon) api.reportPlayBeacon({ trackId: session.trackId, seconds });
+        else createEntry(session);
+      }
+    },
+    [createEntry]
+  );
+
+  // A different track = a new listen.
+  useEffect(() => {
+    if (sessionRef.current && sessionRef.current.trackId !== currentId) closeSession(false);
+  }, [currentId, closeSession]);
+
+  // Count listened seconds while actually playing (not while buffering or paused).
+  useEffect(() => {
+    if (!isPlaying || buffering || !currentId) return;
+    const timer = window.setInterval(() => {
+      let session = sessionRef.current;
+      if (!session || session.trackId !== currentId) {
+        closeSession(false);
+        session = sessionRef.current = {
+          trackId: currentId,
+          listened: 0,
+          entryId: null,
+          reported: 0,
+          creating: false,
+          closed: false,
+        };
+      }
+      session.listened += 1;
+      if (!session.entryId && !session.creating && session.listened >= PLAY_THRESHOLD_S) createEntry(session);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isPlaying, buffering, currentId, closeSession, createEntry]);
+
   /** Same track from the top (repeat-one, or a one-track queue with repeat-all). */
   const restart = useCallback(() => {
+    closeSession(true);
     setPosition(0);
     if (stateRef.current.src) {
       audio.currentTime = 0;
@@ -130,6 +243,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (nextIdx >= q.length || nextIdx < 0) {
           if (auto && rep === "off") {
             // End of the queue: stop and rewind.
+            closeSession(true);
             setIsPlaying(false);
             setPosition(0);
             if (stateRef.current.src) audio.currentTime = 0;
@@ -142,10 +256,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         restart();
         return;
       }
+      if (auto) closeSession(true);
       setCurrentId(q[nextIdx]);
       setPosition(0);
     },
-    [audio, restart]
+    [audio, restart, closeSession]
   );
 
   // ---- Real audio engine ----
@@ -270,9 +385,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (src || !current || position < current.duration) return;
-    if (repeat === "one") setPosition(0);
+    if (repeat === "one") restart();
     else step(1, true);
-  }, [position, current, src, repeat, step]);
+  }, [position, current, src, repeat, step, restart]);
 
   // ---- Controls ----
 
@@ -292,12 +407,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const next = useCallback(() => step(1, false), [step]);
+  const seekSaveRef = useRef<number | undefined>(undefined);
 
   const seek = useCallback(
     (s: number) => {
       const { src: hasAudio, duration: d } = stateRef.current;
       const t = Math.max(0, d > 0 ? Math.min(s, d) : s);
       setPosition(t);
+      window.clearTimeout(seekSaveRef.current);
+      seekSaveRef.current = window.setTimeout(() => saveNowRef.current(), 800);
       if (!hasAudio) return;
       if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) audio.currentTime = t;
       else pendingSeekRef.current = t;
@@ -309,6 +427,108 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (stateRef.current.position > 3) seek(0);
     else step(-1, false);
   }, [seek, step]);
+
+  // ---- Queue editing ----
+
+  const playNext = useCallback(
+    (id: string) => {
+      const cur = stateRef.current.currentId;
+      if (!cur) {
+        playTrack(id, [id]);
+        return;
+      }
+      if (id === cur) return;
+      setQueue((q) => {
+        const rest = q.filter((x) => x !== id);
+        const at = rest.indexOf(cur);
+        if (at === -1) return [cur, id, ...rest];
+        return [...rest.slice(0, at + 1), id, ...rest.slice(at + 1)];
+      });
+    },
+    [playTrack]
+  );
+
+  const addToQueue = useCallback(
+    (id: string) => {
+      const cur = stateRef.current.currentId;
+      if (!cur) {
+        playTrack(id, [id]);
+        return;
+      }
+      if (id === cur) return;
+      setQueue((q) => {
+        const base = q.includes(cur) ? q : [cur, ...q];
+        return [...base.filter((x) => x !== id), id];
+      });
+    },
+    [playTrack]
+  );
+
+  const removeFromQueue = useCallback((id: string) => {
+    if (id === stateRef.current.currentId) return; // "Now playing" stays
+    setQueue((q) => q.filter((x) => x !== id));
+  }, []);
+
+  const clearUpNext = useCallback(() => {
+    const cur = stateRef.current.currentId;
+    setQueue((q) => {
+      if (!cur) return [];
+      const at = q.indexOf(cur);
+      return at === -1 ? [cur] : q.slice(0, at + 1);
+    });
+  }, []);
+
+  // ---- Saving where the listener is (resume after reload / restart) ----
+
+  const savedSnapshot = () => {
+    const { currentId: id, position: pos, queue: q, duration: d } = stateRef.current;
+    if (!id) return null;
+    return {
+      trackId: id,
+      position: Math.round(Math.max(0, d > 0 ? Math.min(pos, d) : pos) * 10) / 10,
+      queue: q.slice(0, 500),
+      volume: volumeRef.current,
+    };
+  };
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const saveNowRef = useRef<(beacon?: boolean) => void>(() => {});
+  saveNowRef.current = (beacon = false) => {
+    if (!restoredRef.current) return; // don't overwrite the saved state before it was restored
+    const snap = savedSnapshot();
+    if (!snap) return;
+    if (beacon) api.savePlaybackBeacon(snap);
+    else api.savePlayback(snap).catch(() => {});
+  };
+
+  // Debounced save on track / play-pause / queue / volume changes.
+  useEffect(() => {
+    const t = window.setTimeout(() => saveNowRef.current(), 800);
+    return () => window.clearTimeout(t);
+  }, [currentId, isPlaying, queue, volume]);
+
+  // Periodic save while playing.
+  useEffect(() => {
+    if (!isPlaying) return;
+    const t = window.setInterval(() => saveNowRef.current(), SAVE_EVERY_MS);
+    return () => window.clearInterval(t);
+  }, [isPlaying]);
+
+  // Page going away (tab closed, reload, mobile app switch): beacon the position + the listen.
+  useEffect(() => {
+    const onHide = () => {
+      saveNowRef.current(true);
+      // If the page comes back (bfcache), listening continues as a new play.
+      closeSession(false, true);
+    };
+    const onVisibility = () => document.visibilityState === "hidden" && saveNowRef.current(true);
+    window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [closeSession]);
 
   const setVolume = useCallback((v: number) => {
     setVolumeState(Math.min(1, Math.max(0, v)));
@@ -386,8 +606,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleMute,
       toggleShuffle,
       cycleRepeat,
+      playNext,
+      addToQueue,
+      removeFromQueue,
+      clearUpNext,
     }),
-    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, setVolume, toggleMute, toggleShuffle, cycleRepeat]
+    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, setVolume, toggleMute, toggleShuffle, cycleRepeat, playNext, addToQueue, removeFromQueue, clearUpNext]
   );
 
   return (

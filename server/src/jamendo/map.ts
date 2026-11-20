@@ -98,6 +98,7 @@ export function mapTrack(raw: JamendoTrack, extraGenres: string[] = [], clientId
       licenseUrl: cleanUrl(raw.license_ccurl),
       jamendoId: String(raw.id),
       shareUrl: scrubClientId(cleanUrl(raw.shareurl) ?? `https://www.jamendo.com/track/${raw.id}`, clientId),
+      albumId: raw.album_id && String(raw.album_id) !== "0" ? toAlbumId(raw.album_id) : undefined,
     },
   };
 }
@@ -122,6 +123,7 @@ function mapAlbumTrack(raw: JamendoAlbumTrack, album: JamendoAlbum, genres: stri
       licenseUrl: cleanUrl(raw.license_ccurl),
       jamendoId: String(raw.id),
       shareUrl: `https://www.jamendo.com/track/${raw.id}`,
+      albumId: toAlbumId(album.id),
     },
   };
 }

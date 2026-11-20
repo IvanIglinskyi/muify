@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { Link } from "react-router-dom";
 
 export function Promo({ onClose }: { onClose: () => void }) {
   return (
@@ -12,9 +13,9 @@ export function Promo({ onClose }: { onClose: () => void }) {
           With our premium subscription, enjoy your favorite tracks like never before. More control, better
           sound, pure music.
         </p>
-        <button type="button" className="pill-btn">
+        <Link to="/plans" className="pill-btn">
           View Plan
-        </button>
+        </Link>
       </div>
       <PromoShape />
     </section>

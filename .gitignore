@@ -3,3 +3,5 @@ dist
 .env
 .env.*
 !.env.example
+# Persisted user state (likes, playlists, history) — local only
+server/data-store/

@@ -3,22 +3,35 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import {
+  addTrackToPlaylist,
   albumOfTheDay,
+  allWeekAlbums,
   catalogStatus,
+  clearHistory,
   computeStats,
+  createPlaylist,
   dailyMix,
+  deletePlaylist,
   getAlbum,
   getPlaylist,
   lastPlayback,
   listAlbums,
+  listeningStats,
   listGenres,
+  listHistory,
   listPlaylists,
   listTracks,
+  MAX_QUEUE,
   playlistTracks,
   recentTracks,
+  removeTrackFromPlaylist,
+  renamePlaylist,
+  reportPlay,
+  savePlayback,
   setAlbumLike,
   setTrackLike,
   upstreamAudioFor,
+  UserError,
   weekAlbums,
   type ListFilters,
 } from "./catalog.js";
@@ -27,7 +40,8 @@ import type { AlbumSort, TrackSort } from "./types.js";
 
 export const app = express();
 
-app.use(express.json());
+// `type` also accepts navigator.sendBeacon() blobs posted as application/json.
+app.use(express.json({ limit: "100kb" }));
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>;
 
@@ -46,6 +60,51 @@ function readLiked(req: Request, res: Response): boolean | undefined {
 }
 
 const MAX_LIMIT = 100;
+
+/** Sends 400 and returns undefined unless `v` is a plausible id string. */
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+function bodyId(res: Response, v: unknown, field: string): string | undefined {
+  if (typeof v !== "string" || !ID_RE.test(v)) {
+    res.status(400).json({ error: `\`${field}\` must be an id string` });
+    return undefined;
+  }
+  return v;
+}
+
+const MAX_PLAYLIST_NAME = 60;
+function bodyPlaylistName(res: Response, v: unknown): string | undefined {
+  const name = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+  if (!name || name.length > MAX_PLAYLIST_NAME) {
+    res.status(400).json({ error: `\`name\` must be a non-empty string of at most ${MAX_PLAYLIST_NAME} characters` });
+    return undefined;
+  }
+  return name;
+}
+
+function bodyIdList(res: Response, v: unknown, field: string, max: number): string[] | undefined {
+  if (!Array.isArray(v) || v.length > max || !v.every((x) => typeof x === "string" && ID_RE.test(x))) {
+    res.status(400).json({ error: `\`${field}\` must be an array of at most ${max} id strings` });
+    return undefined;
+  }
+  return v as string[];
+}
+
+function bodyNumber(res: Response, v: unknown, field: string, min: number, max: number): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) {
+    res.status(400).json({ error: `\`${field}\` must be a number between ${min} and ${max}` });
+    return undefined;
+  }
+  return v;
+}
+
+function requireBody(req: Request, res: Response): Record<string, unknown> | undefined {
+  const b = req.body;
+  if (typeof b !== "object" || b === null || Array.isArray(b)) {
+    res.status(400).json({ error: "Expected a JSON object body (Content-Type: application/json)" });
+    return undefined;
+  }
+  return b as Record<string, unknown>;
+}
 
 /** Parses ?q=&genre=&liked=&sort=&limit= shared by the list endpoints; sends 400 on bad input. */
 function readFilters<S extends string>(req: Request, res: Response, sorts: readonly S[]): ListFilters<S> | undefined {
@@ -111,10 +170,16 @@ app.get(
   })
 );
 
+/** GET /api/albums/week[?all=true] — the 4 home picks, or every album for the "See All" page. */
 app.get(
   "/api/albums/week",
-  handle(async (_req, res) => {
-    res.json(await weekAlbums());
+  handle(async (req, res) => {
+    const all = req.query.all;
+    if (all !== undefined && all !== "true" && all !== "false") {
+      res.status(400).json({ error: "`all` must be true or false" });
+      return;
+    }
+    res.json(all === "true" ? await allWeekAlbums() : await weekAlbums());
   })
 );
 
@@ -161,6 +226,71 @@ app.get(
       return;
     }
     res.json(playlist);
+  })
+);
+
+/** POST /api/playlists { name, trackIds? } → 201 */
+app.post(
+  "/api/playlists",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const name = bodyPlaylistName(res, body.name);
+    if (name === undefined) return;
+    const trackIds = body.trackIds === undefined ? [] : bodyIdList(res, body.trackIds, "trackIds", 1000);
+    if (!trackIds) return;
+    res.status(201).json(await createPlaylist(name, trackIds));
+  })
+);
+
+/** PATCH /api/playlists/:id { name } — user playlists only (403 for built-in ones). */
+app.patch(
+  "/api/playlists/:id",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const name = bodyPlaylistName(res, body.name);
+    if (name === undefined) return;
+    res.json(renamePlaylist(req.params.id, name));
+  })
+);
+
+app.delete(
+  "/api/playlists/:id",
+  handle(async (req, res) => {
+    deletePlaylist(req.params.id);
+    res.status(204).end();
+  })
+);
+
+/** POST /api/playlists/:id/tracks { trackId } — on Favourites this likes the track. */
+app.post(
+  "/api/playlists/:id/tracks",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const trackId = bodyId(res, body.trackId, "trackId");
+    if (!trackId) return;
+    res.json(await addTrackToPlaylist(req.params.id, trackId));
+  })
+);
+
+/** DELETE /api/playlists/:id/tracks/:trackId (or DELETE …/tracks with { trackId }). */
+app.delete(
+  "/api/playlists/:id/tracks/:trackId",
+  handle(async (req, res) => {
+    res.json(await removeTrackFromPlaylist(req.params.id, req.params.trackId));
+  })
+);
+
+app.delete(
+  "/api/playlists/:id/tracks",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const trackId = bodyId(res, body.trackId, "trackId");
+    if (!trackId) return;
+    res.json(await removeTrackFromPlaylist(req.params.id, trackId));
   })
 );
 
@@ -281,9 +411,86 @@ app.get(
   })
 );
 
+/** POST (or PUT) /api/player/state { trackId, position, queue?, volume? } → 204. Also used via sendBeacon. */
+const savePlayerState = handle(async (req, res) => {
+  const body = requireBody(req, res);
+  if (!body) return;
+  const trackId = bodyId(res, body.trackId, "trackId");
+  if (!trackId) return;
+  const position = bodyNumber(res, body.position, "position", 0, 86_400);
+  if (position === undefined) return;
+  let queue: string[] | undefined;
+  if (body.queue !== undefined) {
+    queue = bodyIdList(res, body.queue, "queue", MAX_QUEUE);
+    if (!queue) return;
+  }
+  let volume: number | undefined;
+  if (body.volume !== undefined) {
+    volume = bodyNumber(res, body.volume, "volume", 0, 1);
+    if (volume === undefined) return;
+  }
+  if (!(await savePlayback({ trackId, position, queue, volume }))) {
+    res.status(404).json({ error: "Track not found" });
+    return;
+  }
+  res.status(204).end();
+});
+app.post("/api/player/state", savePlayerState);
+app.put("/api/player/state", savePlayerState);
+
+// ---- History ----
+const MAX_HISTORY_PAGE = 500;
+
+/** GET /api/history?limit= — newest first. */
+app.get("/api/history", (req, res) => {
+  let limit = 100;
+  if (req.query.limit !== undefined) {
+    const n = Number(req.query.limit);
+    if (typeof req.query.limit !== "string" || !Number.isInteger(n) || n < 1 || n > MAX_HISTORY_PAGE) {
+      res.status(400).json({ error: `\`limit\` must be an integer 1-${MAX_HISTORY_PAGE}` });
+      return;
+    }
+    limit = n;
+  }
+  res.json(listHistory(limit));
+});
+
+/** POST /api/history { trackId, seconds, entryId? } → 201 (new play) or 200 (updated play). */
+app.post(
+  "/api/history",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const trackId = bodyId(res, body.trackId, "trackId");
+    if (!trackId) return;
+    const seconds = bodyNumber(res, body.seconds, "seconds", 0, 86_400);
+    if (seconds === undefined) return;
+    let entryId: string | undefined;
+    if (body.entryId !== undefined) {
+      entryId = bodyId(res, body.entryId, "entryId");
+      if (!entryId) return;
+    }
+    const entry = await reportPlay(trackId, seconds, entryId);
+    if (!entry) {
+      res.status(404).json({ error: "Track not found" });
+      return;
+    }
+    res.status(entry.id === entryId ? 200 : 201).json(entry);
+  })
+);
+
+app.delete("/api/history", (_req, res) => {
+  res.json({ cleared: clearHistory() });
+});
+
 // ---- Stats ----
 app.get("/api/stats", (_req, res) => {
   res.json(computeStats());
+});
+
+/** Listening statistics computed from the real play history. */
+app.get("/api/stats/listening", (_req, res) => {
+  res.json(listeningStats());
 });
 
 app.use("/api", (_req: Request, res: Response) => {
@@ -291,7 +498,16 @@ app.use("/api", (_req: Request, res: Response) => {
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof UserError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  // body-parser: malformed JSON (400) / body too large (413).
+  if (err.type === "entity.parse.failed" || err.type === "entity.too.large") {
+    res.status(err.status ?? 400).json({ error: err.type === "entity.too.large" ? "Request body too large" : "Malformed JSON body" });
+    return;
+  }
   console.error("[api]", err);
   if (res.headersSent) {
     res.destroy();

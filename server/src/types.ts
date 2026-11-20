@@ -24,6 +24,8 @@ export interface Track {
   jamendoId?: string;
   /** Track page on jamendo.com. */
   shareUrl?: string;
+  /** Album the track belongs to (when known), for "Go to album". */
+  albumId?: string;
 }
 
 export type CatalogSource = "jamendo" | "seed";
@@ -78,11 +80,63 @@ export interface AlbumWithTracks extends Album {
   tracks: Track[];
 }
 
+/**
+ * "favourites": derived from liked tracks (add/remove = like/unlike).
+ * "builtin": read-only curated playlist. "user": created by the listener (fully editable).
+ */
+export type PlaylistKind = "favourites" | "builtin" | "user";
+
 export interface Playlist {
   id: string;
   name: string;
   icon?: "heart";
+  kind: PlaylistKind;
   trackIds: string[];
+}
+
+/** POST /api/playlists */
+export interface CreatePlaylistBody {
+  name: string;
+  trackIds?: string[];
+}
+
+/** One reported play (GET /api/history). */
+export interface HistoryEntry {
+  id: string;
+  trackId: string;
+  /** ISO timestamp of when the play was first reported. */
+  playedAt: string;
+  /** Seconds actually listened during this play. */
+  seconds: number;
+}
+
+export interface HistoryItem extends HistoryEntry {
+  track: Track;
+}
+
+/**
+ * POST /api/history — report a play (after >= 10 s or at the end of the track).
+ * Pass `entryId` from a previous answer to update the listened seconds of the same play.
+ */
+export interface ReportPlayBody {
+  trackId: string;
+  seconds: number;
+  entryId?: string;
+}
+
+/** GET /api/stats/listening — computed from the real play history. */
+export interface ListeningStats {
+  totalSeconds: number;
+  plays: number;
+  uniqueTracks: number;
+  uniqueArtists: number;
+  likedTracks: number;
+  likedAlbums: number;
+  firstPlayedAt: string | null;
+  topTracks: { track: Track; plays: number; seconds: number }[];
+  topArtists: { artist: string; plays: number; seconds: number }[];
+  /** Oldest → newest, local server dates (YYYY-MM-DD). */
+  last7Days: { date: string; seconds: number; plays: number }[];
 }
 
 /** GET /api/status — which catalogue the server is serving right now. */
@@ -106,6 +160,20 @@ export interface PlaybackState {
   position: number;
   queue: string[];
   track: Track;
+  /** Tracks of `queue` (so the client can render/play them without extra requests). */
+  queueTracks: Track[];
+  /** 0..1 */
+  volume: number;
+  /** True when restored from the listener's saved state (false: demo default). */
+  saved: boolean;
+}
+
+/** POST /api/player/state (also sent with navigator.sendBeacon on pagehide). */
+export interface SavePlaybackBody {
+  trackId: string;
+  position: number;
+  queue?: string[];
+  volume?: number;
 }
 
 export interface ApiError {
