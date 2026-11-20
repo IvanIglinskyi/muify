@@ -10,6 +10,7 @@ import {
 } from "react";
 import { api } from "../api";
 import type { Track } from "../types";
+import { useAuth } from "./AuthContext";
 import { useLibrary } from "./LibraryContext";
 
 export type RepeatMode = "off" | "all" | "one";
@@ -82,7 +83,11 @@ const validDuration = (d: number) => (Number.isFinite(d) && d > 0 ? d : null);
  * created once here (never rendered), so playback survives route changes.
  */
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { tracks, lastPlayback, notify, historyChanged } = useLibrary();
+  const { tracks, lastPlayback, lastPlaybackFor, notify, historyChanged } = useLibrary();
+  const { identityKey, canSave } = useAuth();
+  /** Guests can listen, but nothing is reported or saved for them. */
+  const canSaveRef = useRef(canSave);
+  canSaveRef.current = canSave;
   const [audio] = useState(() => {
     const a = new Audio();
     a.preload = "auto";
@@ -108,15 +113,35 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // Restore the last track, position, queue and volume once the library has loaded (paused —
   // never autoplay).
   const restoredRef = useRef(false);
+  /** The listen in progress (declared early: the identity effect below drops it). */
+  const sessionRef = useRef<ListenSession | null>(null);
+
+  // Listener changed. Signing in keeps whatever a guest is playing; signing out (or switching
+  // accounts) stops playback and forgets the previous user's player state.
+  const prevIdentityRef = useRef<string | null>(null);
   useEffect(() => {
-    if (restoredRef.current || !lastPlayback) return;
+    if (identityKey === null) return;
+    const prev = prevIdentityRef.current;
+    prevIdentityRef.current = identityKey;
+    if (prev === null || prev === identityKey) return;
+    restoredRef.current = false;
+    if (prev === "guest") return;
+    sessionRef.current = null; // that listen belonged to the previous user
+    setIsPlaying(false);
+    setCurrentId(null);
+    setQueue([]);
+    setPosition(0);
+  }, [identityKey]);
+
+  useEffect(() => {
+    if (restoredRef.current || !lastPlayback || lastPlaybackFor !== identityKey) return;
     restoredRef.current = true;
     if (Number.isFinite(lastPlayback.volume)) setVolumeState(Math.min(1, Math.max(0, lastPlayback.volume)));
     if (currentId) return; // the listener already picked something while the library loaded
     setCurrentId(lastPlayback.trackId);
     setQueue(lastPlayback.queue.length ? lastPlayback.queue : [lastPlayback.trackId]);
     setPosition(Math.max(0, Math.min(lastPlayback.position, lastPlayback.track.duration - 1)));
-  }, [currentId, lastPlayback]);
+  }, [currentId, lastPlayback, lastPlaybackFor, identityKey]);
 
   const stateRef = useRef({ currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration });
   stateRef.current = { currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration };
@@ -141,11 +166,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ---- Play history ----
 
-  const sessionRef = useRef<ListenSession | null>(null);
   const historyChangedRef = useRef(historyChanged);
   historyChangedRef.current = historyChanged;
 
   const createEntry = useCallback((session: ListenSession) => {
+    if (!canSaveRef.current) return;
     session.creating = true;
     const seconds = Math.round(session.listened);
     api
@@ -174,7 +199,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (ended: boolean, beacon = false) => {
       const session = sessionRef.current;
       sessionRef.current = null;
-      if (!session) return;
+      if (!session || !canSaveRef.current) return;
       session.closed = true;
       const seconds = Math.round(session.listened);
       if (session.entryId) {
@@ -494,7 +519,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   volumeRef.current = volume;
   const saveNowRef = useRef<(beacon?: boolean) => void>(() => {});
   saveNowRef.current = (beacon = false) => {
-    if (!restoredRef.current) return; // don't overwrite the saved state before it was restored
+    if (!restoredRef.current || !canSaveRef.current) return; // don't overwrite the saved state before it was restored
     const snap = savedSnapshot();
     if (!snap) return;
     if (beacon) api.savePlaybackBeacon(snap);

@@ -146,6 +146,48 @@ export interface CatalogStatus {
   jamendoConfigured: boolean;
   /** Last Jamendo error while falling back to seed data, else null. */
   lastError: string | null;
+  /** How listeners are identified. */
+  auth: AuthStatus;
+}
+
+/**
+ * "firebase": Firebase Auth accounts, per-user state in Realtime Database (guests can browse and
+ * play; saving requires sign-in). "local": no accounts — one implicit local user (JSON file).
+ */
+export type AuthMode = "firebase" | "local";
+
+export interface AuthStatus {
+  mode: AuthMode;
+  /** Server talks to the Firebase Emulator Suite. */
+  emulator: boolean;
+  /** Firebase project id (public), or null in local mode. */
+  projectId: string | null;
+  /** Why accounts are off (local mode), else null. */
+  reason: string | null;
+}
+
+/** GET /api/me — the signed-in account (Firebase mode) or the local user. */
+export interface MeResponse {
+  uid: string;
+  mode: AuthMode;
+  email: string | null;
+  emailVerified: boolean;
+  displayName: string | null;
+  photoURL: string | null;
+  /** Initials-avatar colour (#rrggbb) or null for the default. */
+  accentColor: string | null;
+  /** Show the provider photo instead of initials (when there is one). */
+  usePhoto: boolean;
+  /** Linked sign-in providers ("password", "google.com"). */
+  providers: string[];
+  createdAt: string | null;
+}
+
+/** PATCH /api/me */
+export interface UpdateMeBody {
+  displayName?: string;
+  accentColor?: string | null;
+  usePhoto?: boolean;
 }
 
 export interface Stats {
@@ -168,7 +210,7 @@ export interface PlaybackState {
   saved: boolean;
 }
 
-/** POST /api/player/state (also sent with navigator.sendBeacon on pagehide). */
+/** POST /api/player/state (also sent with a keepalive fetch on pagehide). */
 export interface SavePlaybackBody {
   trackId: string;
   position: number;
@@ -178,4 +220,6 @@ export interface SavePlaybackBody {
 
 export interface ApiError {
   error: string;
+  /** Machine-readable reason: "auth-required", "token-revoked", "requires-recent-login", … */
+  code?: string;
 }

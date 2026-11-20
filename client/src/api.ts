@@ -9,6 +9,7 @@ import type {
   HistoryItem,
   ListeningStats,
   ListQuery,
+  MeResponse,
   PlaybackState,
   Playlist,
   ReportPlayBody,
@@ -16,25 +17,55 @@ import type {
   Stats,
   Track,
   TrackSort,
+  UpdateMeBody,
 } from "./types";
 
 export class ApiRequestError extends Error {
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    /** Server reason code ("auth-required", "token-revoked", "requires-recent-login", …). */
+    public code?: string
   ) {
     super(message);
   }
 }
 
+// ---- Auth plumbing (set by AuthProvider) ----
+/** Fresh ID token (refreshed by the SDK when close to expiry), or null for guests / local mode. */
+let tokenProvider: () => Promise<string | null> = async () => null;
+/** Last known token, readable synchronously (pagehide can't await). */
+let cachedToken: string | null = null;
+/** Called when the server rejects our session (revoked / deleted account). */
+let onSessionRejected: (code: string) => void = () => {};
+
+export function setAuthBridge(bridge: {
+  getToken: () => Promise<string | null>;
+  cachedToken: () => string | null;
+  onSessionRejected: (code: string) => void;
+}) {
+  tokenProvider = bridge.getToken;
+  cachedTokenGetter = bridge.cachedToken;
+  onSessionRejected = bridge.onSessionRejected;
+}
+let cachedTokenGetter: () => string | null = () => cachedToken;
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await tokenProvider().catch(() => null);
+  cachedToken = token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers: { "Content-Type": "application/json", ...(await authHeaders()), ...(options?.headers ?? {}) },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiRequestError(body.error ?? `Request failed (${res.status})`, res.status);
+    const code = typeof body.code === "string" ? body.code : undefined;
+    if (res.status === 401 && (code === "token-revoked" || code === "user-disabled")) onSessionRejected(code);
+    throw new ApiRequestError(body.error ?? `Request failed (${res.status})`, res.status, code);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -61,15 +92,18 @@ const patchLike = (liked: boolean): RequestInit => json("PATCH", { liked });
 const enc = encodeURIComponent;
 
 /**
- * Fire-and-forget POST that survives page unload (pagehide): sendBeacon when available,
- * else a keepalive fetch.
+ * Fire-and-forget POST that survives page unload (pagehide). navigator.sendBeacon can't carry an
+ * Authorization header, so this is a keepalive fetch with the last known ID token (read
+ * synchronously: there is no time to await a token refresh while the page goes away).
  */
 function beacon(url: string, body: unknown): void {
-  const data = JSON.stringify(body);
-  if (navigator.sendBeacon?.(url, new Blob([data], { type: "application/json" }))) return;
-  fetch(url, { method: "POST", body: data, headers: { "Content-Type": "application/json" }, keepalive: true }).catch(
-    () => {}
-  );
+  const token = cachedTokenGetter();
+  fetch(url, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    keepalive: true,
+  }).catch(() => {});
 }
 
 export const api = {
@@ -105,4 +139,10 @@ export const api = {
   getStatus: (signal?: AbortSignal) => request<CatalogStatus>("/api/status", { signal }),
   likeTrack: (id: string, liked: boolean) => request<Track>(`/api/tracks/${enc(id)}/like`, patchLike(liked)),
   likeAlbum: (id: string, liked: boolean) => request<Album>(`/api/albums/${enc(id)}/like`, patchLike(liked)),
+  // ---- Account ----
+  getMe: () => request<MeResponse>("/api/me"),
+  updateMe: (body: UpdateMeBody) => request<MeResponse>("/api/me", json("PATCH", body)),
+  revokeSessions: () => request<void>("/api/me/revoke-sessions", { method: "POST" }),
+  exportMyData: () => request<unknown>("/api/me/export"),
+  deleteAccount: () => request<void>("/api/me", { method: "DELETE" }),
 };

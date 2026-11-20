@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { useAuth } from "./AuthContext";
 import type { Album, AlbumWithTracks, PlaybackState, Playlist, Stats, Track } from "../types";
 
 export const FAVOURITES_ID = "p-favourites";
@@ -29,6 +30,8 @@ interface LibraryState {
   playlists: Playlist[];
   stats: Stats | null;
   lastPlayback: PlaybackState | null;
+  /** Identity (`useAuth().identityKey`) `lastPlayback` belongs to. */
+  lastPlaybackFor: string | null;
   /** Bumped whenever the play history changes (pages showing history/stats refetch). */
   historyVersion: number;
 }
@@ -80,6 +83,7 @@ const initialState: LibraryState = {
   playlists: [],
   stats: null,
   lastPlayback: null,
+  lastPlaybackFor: null,
   historyVersion: 0,
 };
 
@@ -95,17 +99,50 @@ function addNew<T extends { id: string }>(index: Record<string, T>, list: T[]): 
   return next;
 }
 
+/** Sets `liked` from `liked` for every indexed item (keeps object identity when unchanged). */
+function relike<T extends { id: string; liked: boolean }>(index: Record<string, T>, liked: Set<string>): Record<string, T> {
+  let changed = false;
+  const next: Record<string, T> = {};
+  for (const [id, x] of Object.entries(index)) {
+    const l = liked.has(id);
+    if (x.liked !== l) changed = true;
+    next[id] = x.liked === l ? x : { ...x, liked: l };
+  }
+  return changed ? next : index;
+}
+
 function stripTracks({ tracks: _t, ...album }: AlbumWithTracks): Album {
   return album;
 }
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
+  const { identityKey, requireSignIn } = useAuth();
   const [state, setState] = useState<LibraryState>(initialState);
   const stateRef = useRef(state);
   stateRef.current = state;
+  /** Identity the data on screen belongs to (likes etc. are re-applied when it changes). */
+  const loadedForRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (identityKey === null) return; // wait until we know who is listening
     let cancelled = false;
+    const switching = loadedForRef.current !== null && loadedForRef.current !== identityKey;
+    loadedForRef.current = identityKey;
+    if (switching) {
+      // Another listener (sign-in / sign-out): drop the previous user's data from the UI at once.
+      setState((s) => ({
+        ...s,
+        loading: true,
+        tracks: Object.fromEntries(Object.entries(s.tracks).map(([id, t]) => [id, t.liked ? { ...t, liked: false } : t])),
+        albums: Object.fromEntries(Object.entries(s.albums).map(([id, a]) => [id, a.liked ? { ...a, liked: false } : a])),
+        recentIds: [],
+        playlists: s.playlists.filter((p) => p.kind !== "user").map((p) => (p.id === FAVOURITES_ID ? { ...p, trackIds: [] } : p)),
+        stats: null,
+        lastPlayback: null,
+        lastPlaybackFor: null,
+        historyVersion: s.historyVersion + 1,
+      }));
+    }
     Promise.all([
       api.getAlbumOfTheDay(),
       api.getWeekAlbums(),
@@ -129,12 +166,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           ...last.queueTracks,
         ];
         // Merge (not replace): a page such as Explore may already have added items to the index.
+        // Like flags of everything already indexed are re-derived for the current listener.
+        const likedT = new Set(likedTracks.map((t) => t.id));
+        const likedA = new Set(likedAlbums.map((a) => a.id));
         setState((s) => ({
           ...s,
           loading: false,
           error: null,
-          tracks: addNew(s.tracks, allTracks),
-          albums: addNew(s.albums, allAlbums.map(stripTracks)),
+          tracks: addNew(relike(s.tracks, likedT), allTracks),
+          albums: addNew(relike(s.albums, likedA), allAlbums.map(stripTracks)),
           albumOfTheDayId: day.id,
           weekAlbumIds: week.map((a) => a.id),
           recentIds: recent.map((t) => t.id),
@@ -142,6 +182,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           playlists,
           stats,
           lastPlayback: last,
+          lastPlaybackFor: identityKey,
         }));
       })
       .catch((e: Error) => {
@@ -150,7 +191,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [identityKey]);
 
   const notify = useCallback((message: string) => setState((s) => ({ ...s, error: message })), []);
   const notifyInfo = useCallback((message: string) => setState((s) => ({ ...s, info: message })), []);
@@ -178,6 +219,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     (id: string, liked: boolean) => {
       const track = stateRef.current.tracks[id];
       if (!track || track.liked === liked) return Promise.resolve();
+      if (!requireSignIn("save your favourites")) return Promise.resolve();
       applyTrackLike(id, liked); // optimistic
       return api.likeTrack(id, liked).then(
         () => undefined,
@@ -187,7 +229,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         }
       );
     },
-    [applyTrackLike, notify]
+    [applyTrackLike, notify, requireSignIn]
   );
 
   const toggleTrackLike = useCallback(
@@ -214,6 +256,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       const album = stateRef.current.albums[id];
       if (!album) return;
+      if (!requireSignIn("save albums to your library")) return;
       const liked = !album.liked;
       applyAlbumLike(id, liked);
       api.likeAlbum(id, liked).catch((e: Error) => {
@@ -221,7 +264,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         notify(`Could not update like: ${e.message}`);
       });
     },
-    [applyAlbumLike, notify]
+    [applyAlbumLike, notify, requireSignIn]
   );
 
   const mergeTracks = useCallback((list: Track[]) => {
@@ -254,6 +297,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const createPlaylist = useCallback(
     async (name: string, trackIds: string[] = []) => {
+      if (!requireSignIn("create playlists")) return null;
       try {
         const p = await api.createPlaylist({ name, trackIds });
         setState((s) => ({ ...s, playlists: [...s.playlists, p] }));
@@ -264,7 +308,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         return null;
       }
     },
-    [notifyInfo, fail]
+    [notifyInfo, fail, requireSignIn]
   );
 
   const renamePlaylist = useCallback(
@@ -299,6 +343,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const addToPlaylist = useCallback(
     async (playlistId: string, trackId: string) => {
       if (playlistId === FAVOURITES_ID) return setTrackLike(trackId, true);
+      if (!requireSignIn("save playlists")) return;
       const p = stateRef.current.playlists.find((x) => x.id === playlistId);
       if (!p) return;
       if (p.trackIds.includes(trackId)) {
@@ -315,7 +360,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         fail("Could not add to playlist")(e as Error);
       }
     },
-    [setTrackLike, putPlaylist, notifyInfo, fail]
+    [setTrackLike, putPlaylist, notifyInfo, fail, requireSignIn]
   );
 
   const removeFromPlaylist = useCallback(
@@ -354,6 +399,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [refreshRecent]);
 
   const clearHistory = useCallback(async () => {
+    if (!requireSignIn("keep a listening history")) return false;
     try {
       const { cleared } = await api.clearHistory();
       historyChanged();
@@ -363,7 +409,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       fail("Could not clear history")(e as Error);
       return false;
     }
-  }, [historyChanged, notifyInfo, fail]);
+  }, [historyChanged, notifyInfo, fail, requireSignIn]);
 
   const dismissError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
   const dismissInfo = useCallback(() => setState((s) => ({ ...s, info: null })), []);

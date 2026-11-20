@@ -6,6 +6,7 @@ import { usePlayer } from "../store/PlayerContext";
 import type { Track } from "../types";
 import type { MenuItem } from "./common";
 import { useDialogs } from "./Dialogs";
+import { useAuth } from "../store/AuthContext";
 
 /** "License (CC …)" and "Open on Jamendo" menu entries for Creative Commons tracks. */
 export function attributionItems(t: Track): MenuItem[] {
@@ -34,8 +35,10 @@ export interface TrackMenuOptions {
 export function useNewPlaylist() {
   const { prompt } = useDialogs();
   const { createPlaylist } = useLibrary();
+  const { requireSignIn } = useAuth();
   return useCallback(
     async (trackIds: string[] = []) => {
+      if (!requireSignIn("create playlists")) return null;
       const name = await prompt({
         title: "New playlist",
         label: "Playlist name",
@@ -44,7 +47,7 @@ export function useNewPlaylist() {
       });
       return name ? createPlaylist(name, trackIds) : null;
     },
-    [prompt, createPlaylist]
+    [prompt, createPlaylist, requireSignIn]
   );
 }
 

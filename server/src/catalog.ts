@@ -1,7 +1,10 @@
 // Catalogue facade used by the routes: serves Jamendo data when JAMENDO_CLIENT_ID is set and
 // Jamendo answers, otherwise the built-in fictional seed (no audio → simulated playback).
-// User state (likes, user playlists, history, last playback) is keyed by track/album id for both
-// sources and persisted by ./userStore.ts.
+//
+// The catalogue (tracks/albums/genres/curated playlists) is shared by everyone. User state
+// (likes, user playlists, history, last playback) belongs to one listener: every function that
+// touches it takes the caller's `UserDoc` (see userStore.ts), or `null` for a signed-out guest —
+// guests see no likes, default "Recent plays" and the demo player state.
 import { randomUUID } from "node:crypto";
 import { albumOfTheDayId as seedDayId, albums as seedAlbums, weekAlbumIds as seedWeekIds } from "./data/albums.js";
 import { genreDefs } from "./data/genres.js";
@@ -26,75 +29,54 @@ import type {
   Track,
   TrackSort,
 } from "./types.js";
-import { markChanged, MAX_HISTORY, onBeforeSave, userState, userStateExisted, type StoredPlaylist } from "./userStore.js";
+import { authMode, firebaseConfigInfo } from "./firebase.js";
+import { LOCAL_UID, setDocHooks, type StoredPlaylist, type UserDoc } from "./userStore.js";
+
+/** The caller's state, or null for a guest. */
+export type Viewer = UserDoc | null;
 
 // ---------------------------------------------------------------------------
 // Registry of every track/album the server has served (seed + Jamendo). The `liked` flag on
-// stored objects is ignored — likes live in the sets below and are applied on the way out.
+// stored objects is ignored — likes live in each user's state and are applied on the way out.
 // ---------------------------------------------------------------------------
 const trackIndex = new Map<string, Track>();
 const albumIndex = new Map<string, Album>();
 /** Real Jamendo stream URLs (contain the client id) — server-side only. */
 const upstreamAudio = new Map<string, string>();
 
-const likedTrackIds = new Set<string>(userState.likedTrackIds);
-const likedAlbumIds = new Set<string>(userState.likedAlbumIds);
-
 const seedAlbumOfTrack = new Map<string, string>();
 for (const a of seedAlbums) for (const tid of a.trackIds) if (!seedAlbumOfTrack.has(tid)) seedAlbumOfTrack.set(tid, a.id);
 
-for (const t of seedTracks) trackIndex.set(t.id, { ...t, albumId: seedAlbumOfTrack.get(t.id) });
-for (const a of seedAlbums) albumIndex.set(a.id, a);
-// Snapshots of Jamendo items the listener referenced in earlier sessions.
-for (const t of Object.values(userState.trackMeta)) if (!trackIndex.has(t.id)) trackIndex.set(t.id, { ...t, liked: false });
-for (const a of Object.values(userState.albumMeta)) if (!albumIndex.has(a.id)) albumIndex.set(a.id, { ...a, liked: false });
+for (const t of seedTracks) trackIndex.set(t.id, { ...t, liked: false, albumId: seedAlbumOfTrack.get(t.id) });
+for (const a of seedAlbums) albumIndex.set(a.id, { ...a, liked: false });
 
-function persistLikes() {
-  userState.likedTrackIds = [...likedTrackIds];
-  userState.likedAlbumIds = [...likedAlbumIds];
-  markChanged();
-}
-
-// First run only: the seed's demo likes make sense for the demo catalogue. With Jamendo
-// configured, the listener starts with empty Favourites instead of fictional, unplayable tracks.
-// (env.ts has already loaded server/.env by the time this module runs.)
-if (!userStateExisted && !jamendoClientId()) {
-  for (const t of seedTracks) if (t.liked) likedTrackIds.add(t.id);
-  for (const a of seedAlbums) if (a.liked) likedAlbumIds.add(a.id);
-  persistLikes();
-}
+setDocHooks({
+  onLoad(doc, fresh) {
+    // Snapshots of Jamendo items this listener referenced in earlier sessions.
+    for (const t of Object.values(doc.state.trackMeta)) if (!trackIndex.has(t.id)) trackIndex.set(t.id, { ...t, liked: false });
+    for (const a of Object.values(doc.state.albumMeta)) if (!albumIndex.has(a.id)) albumIndex.set(a.id, { ...a, liked: false });
+    // Local mode, first run only: the seed's demo likes make sense for the demo catalogue. With
+    // Jamendo configured (or real accounts) the listener starts with empty Favourites instead.
+    if (fresh && doc.uid === LOCAL_UID && !jamendoClientId()) {
+      for (const t of seedTracks) if (t.liked) doc.setTrackLike(t.id, true);
+      for (const a of seedAlbums) if (a.liked) doc.setAlbumLike(a.id, true);
+    }
+  },
+});
 
 /** Remembers a non-seed track so it still renders after a restart (seed tracks always exist). */
-function snapshotTrack(id: string) {
+function snapshotTrack(u: UserDoc, id: string) {
   const t = trackIndex.get(id);
-  if (t && t.source !== "seed") userState.trackMeta[id] = { ...t, liked: false };
+  if (t && t.source !== "seed") u.snapshotTrack(t);
 }
 
-function snapshotAlbum(id: string) {
+function snapshotAlbum(u: UserDoc, id: string) {
   const a = albumIndex.get(id);
   if (!a || a.source === "seed") return;
   const { liked: _l, ...plain } = a;
-  userState.albumMeta[id] = plain;
-  a.trackIds.forEach(snapshotTrack);
+  u.snapshotAlbum(plain);
+  a.trackIds.forEach((t) => snapshotTrack(u, t));
 }
-
-/** Drops snapshots nothing refers to any more (runs right before every write). */
-onBeforeSave((s) => {
-  const keepAlbums = new Set(s.likedAlbumIds);
-  const keepTracks = new Set<string>([
-    ...s.likedTrackIds,
-    ...s.playlists.flatMap((p) => p.trackIds),
-    ...s.history.map((h) => h.trackId),
-    ...(s.playback ? [s.playback.trackId, ...s.playback.queue] : []),
-  ]);
-  for (const id of Object.keys(s.albumMeta)) {
-    if (keepAlbums.has(id)) s.albumMeta[id].trackIds.forEach((t) => keepTracks.add(t));
-    else delete s.albumMeta[id];
-  }
-  for (const id of Object.keys(s.trackMeta)) if (!keepTracks.has(id)) delete s.trackMeta[id];
-  // Refresh snapshots that are still referenced (metadata may have been enriched since).
-  for (const id of keepTracks) snapshotTrack(id);
-});
 
 function registerTrack({ track, upstreamAudio: audio }: MappedTrack): Track {
   const known = trackIndex.get(track.id);
@@ -108,6 +90,7 @@ function registerTrack({ track, upstreamAudio: audio }: MappedTrack): Track {
         albumId: track.albumId ?? known.albumId,
       }
     : track;
+  merged.liked = false;
   trackIndex.set(merged.id, merged);
   if (audio) upstreamAudio.set(merged.id, audio);
   return merged;
@@ -118,19 +101,28 @@ function registerAlbum({ album, tracks }: MappedAlbum): Album {
   const { tracks: _t, ...plain } = album;
   const known = albumIndex.get(plain.id);
   const merged: Album = known ? { ...plain, genres: [...new Set([...known.genres, ...plain.genres])] } : plain;
+  merged.liked = false;
   albumIndex.set(merged.id, merged);
   return merged;
 }
 
-const withLike = (t: Track): Track => ({ ...t, liked: likedTrackIds.has(t.id) });
+const trackLiked = (id: string, u: Viewer) => Boolean(u?.state.likedTracks.has(id));
+const albumLiked = (id: string, u: Viewer) => Boolean(u?.state.likedAlbums.has(id));
 
-function tracksByIds(ids: string[]): Track[] {
-  return ids.map((id) => trackIndex.get(id)).filter((t): t is Track => Boolean(t)).map(withLike);
+const withLike = (t: Track, u: Viewer): Track => ({ ...t, liked: trackLiked(t.id, u) });
+const likeAll = (list: Track[], u: Viewer) => list.map((t) => withLike(t, u));
+
+function tracksByIds(ids: string[], u: Viewer): Track[] {
+  return ids.map((id) => trackIndex.get(id)).filter((t): t is Track => Boolean(t)).map((t) => withLike(t, u));
 }
 
-function withTracks(a: Album): AlbumWithTracks {
-  return { ...a, liked: likedAlbumIds.has(a.id), tracks: tracksByIds(a.trackIds) };
+function withTracks(a: Album, u: Viewer): AlbumWithTracks {
+  return { ...a, liked: albumLiked(a.id, u), tracks: tracksByIds(a.trackIds, u) };
 }
+
+/** Re-applies the viewer's likes to albums fetched without them. */
+const likeAlbums = (list: AlbumWithTracks[], u: Viewer) =>
+  list.map((a) => ({ ...a, liked: albumLiked(a.id, u), tracks: likeAll(a.tracks, u) }));
 
 // ---------------------------------------------------------------------------
 // Source selection + fallback
@@ -194,15 +186,22 @@ function nonEmpty<T>(list: T[], what: string): T[] {
 
 export function catalogStatus(): CatalogStatus {
   const configured = Boolean(jamendoClientId());
+  const fb = firebaseConfigInfo();
   return {
     source: configured && !lastError ? "jamendo" : "seed",
     jamendoConfigured: configured,
     lastError: configured ? lastError : null,
+    auth: {
+      mode: authMode(),
+      emulator: fb.emulator,
+      projectId: fb.projectId,
+      reason: fb.mode === "local" ? "Firebase is not configured on the server" : null,
+    },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Jamendo queries
+// Jamendo queries (results carry no likes; the public functions apply the viewer's likes)
 // ---------------------------------------------------------------------------
 const TRACK_PARAMS: JamendoParams = { include: "musicinfo", audioformat: "mp32", imagesize: 300 };
 const ALBUM_PARAMS: JamendoParams = { audioformat: "mp32", imagesize: 500 };
@@ -211,13 +210,13 @@ const MAX_JAMENDO_LIMIT = 200;
 async function jamendoTracks(params: JamendoParams, genres: string[] = []): Promise<Track[]> {
   const raw = await jamendoGet<JamendoTrack>("tracks", { ...TRACK_PARAMS, ...params });
   const clientId = jamendoClientId();
-  return raw.map((r) => registerTrack(mapTrack(r, genres, clientId))).map(withLike);
+  return raw.map((r) => ({ ...registerTrack(mapTrack(r, genres, clientId)) }));
 }
 
 async function jamendoAlbums(params: JamendoParams, genres: string[] = []): Promise<AlbumWithTracks[]> {
   const raw = await jamendoGet<JamendoAlbum>("albums/tracks", { ...ALBUM_PARAMS, ...params });
   const clientId = jamendoClientId();
-  return raw.map((r) => withTracks(registerAlbum(mapAlbum(r, genres, clientId))));
+  return raw.map((r) => withTracks(registerAlbum(mapAlbum(r, genres, clientId)), null));
 }
 
 /** Albums by Jamendo id, in the given order. */
@@ -271,38 +270,41 @@ export interface ListFilters<S extends string> {
 
 const matches = (q: string, ...fields: string[]) => !q || fields.join(" ").toLowerCase().includes(q.toLowerCase());
 
-export function albumOfTheDay(): Promise<AlbumWithTracks> {
-  return fromJamendo(
+export async function albumOfTheDay(u: Viewer): Promise<AlbumWithTracks> {
+  const a = await fromJamendo(
     "Album of the day",
     async () => {
       const list = await popularAlbums();
       return list[dayNumber() % Math.min(list.length, 5)];
     },
-    () => withTracks(albumIndex.get(seedDayId)!)
+    () => withTracks(albumIndex.get(seedDayId)!, null)
   );
+  return likeAlbums([a], u)[0];
 }
 
-export function weekAlbums(): Promise<AlbumWithTracks[]> {
-  return fromJamendo(
+export async function weekAlbums(u: Viewer): Promise<AlbumWithTracks[]> {
+  const list = await fromJamendo(
     "Albums of the week",
     async () => {
-      const list = await popularAlbums();
-      const day = list[dayNumber() % Math.min(list.length, 5)];
-      return list.filter((a) => a.id !== day.id).slice(0, 4);
+      const all = await popularAlbums();
+      const day = all[dayNumber() % Math.min(all.length, 5)];
+      return all.filter((a) => a.id !== day.id).slice(0, 4);
     },
-    () => seedWeekIds.map((id) => withTracks(albumIndex.get(id)!))
+    () => seedWeekIds.map((id) => withTracks(albumIndex.get(id)!, null))
   );
+  return likeAlbums(list, u);
 }
 
-export function dailyMix(): Promise<Track[]> {
-  return fromJamendo(
+export async function dailyMix(u: Viewer): Promise<Track[]> {
+  const list = await fromJamendo(
     "Daily mix",
     async () => {
       const pool = await groupedByArtist({ order: "popularity_month", limit: 50 });
       return seededShuffle(nonEmpty(pool, "daily mix tracks"), dayNumber()).slice(0, 12);
     },
-    () => tracksByIds(dailyMixTrackIds)
+    () => tracksByIds(dailyMixTrackIds, null)
   );
+  return likeAll(list, u);
 }
 
 /** Default "Recent plays" (used while the listener has no play history yet). */
@@ -310,33 +312,34 @@ function defaultRecentTracks(): Promise<Track[]> {
   return fromJamendo(
     "Recent plays",
     async () => nonEmpty(await groupedByArtist({ featured: 1, limit: 11 }), "featured tracks"),
-    () => tracksByIds(recentTrackIds)
+    () => tracksByIds(recentTrackIds, null)
   );
 }
 
 const RECENT_LIMIT = 20;
 
 /** Real play history (deduplicated, newest first), else the default list. */
-export async function recentTracks(): Promise<Track[]> {
+export async function recentTracks(u: Viewer): Promise<Track[]> {
   const seen = new Set<string>();
   const ids: string[] = [];
-  for (let i = userState.history.length - 1; i >= 0 && ids.length < RECENT_LIMIT; i--) {
-    const id = userState.history[i].trackId;
+  const history = u?.state.history ?? [];
+  for (let i = history.length - 1; i >= 0 && ids.length < RECENT_LIMIT; i--) {
+    const id = history[i].trackId;
     if (seen.has(id) || !trackIndex.has(id)) continue;
     seen.add(id);
     ids.push(id);
   }
-  return ids.length ? tracksByIds(ids) : defaultRecentTracks();
+  return ids.length ? tracksByIds(ids, u) : likeAll(await defaultRecentTracks(), u);
 }
 
 const DEFAULT_VOLUME = 0.8;
 
-export async function lastPlayback(): Promise<PlaybackState> {
-  const saved = userState.playback;
+export async function lastPlayback(u: Viewer): Promise<PlaybackState> {
+  const saved = u?.state.playback;
   if (saved) {
-    const track = await getTrack(saved.trackId);
+    const track = await getTrack(saved.trackId, u);
     if (track) {
-      const queueTracks = tracksByIds(saved.queue.includes(track.id) ? saved.queue : [track.id, ...saved.queue]);
+      const queueTracks = tracksByIds(saved.queue.includes(track.id) ? saved.queue : [track.id, ...saved.queue], u);
       return {
         trackId: track.id,
         position: Math.min(saved.position, Math.max(0, track.duration - 1)),
@@ -348,7 +351,7 @@ export async function lastPlayback(): Promise<PlaybackState> {
       };
     }
   }
-  const recent = await defaultRecentTracks();
+  const recent = likeAll(await defaultRecentTracks(), u);
   if (recent[0]?.source === "jamendo") {
     return {
       trackId: recent[0].id,
@@ -362,8 +365,8 @@ export async function lastPlayback(): Promise<PlaybackState> {
   }
   return {
     ...seedLastPlayback,
-    queueTracks: tracksByIds(seedLastPlayback.queue),
-    track: withLike(trackIndex.get(seedLastPlayback.trackId)!),
+    queueTracks: tracksByIds(seedLastPlayback.queue, u),
+    track: withLike(trackIndex.get(seedLastPlayback.trackId)!, u),
     volume: DEFAULT_VOLUME,
     saved: false,
   };
@@ -372,31 +375,30 @@ export async function lastPlayback(): Promise<PlaybackState> {
 export const MAX_QUEUE = 500;
 
 /** Saves where the listener is. Returns false if the track is unknown. */
-export async function savePlayback(input: {
-  trackId: string;
-  position: number;
-  queue?: string[];
-  volume?: number;
-}): Promise<boolean> {
-  const track = await getTrack(input.trackId);
+export async function savePlayback(
+  u: UserDoc,
+  input: { trackId: string; position: number; queue?: string[]; volume?: number }
+): Promise<boolean> {
+  const track = await getTrack(input.trackId, null);
   if (!track) return false;
-  const prev = userState.playback;
+  const prev = u.state.playback;
   const queue = input.queue ? input.queue.filter((id) => trackIndex.has(id)).slice(0, MAX_QUEUE) : prev?.queue ?? [track.id];
-  userState.playback = {
+  u.setPlayback({
     trackId: track.id,
     position: Math.min(Math.max(0, input.position), track.duration || input.position),
     queue,
     volume: input.volume ?? prev?.volume ?? DEFAULT_VOLUME,
     updatedAt: new Date().toISOString(),
-  };
-  markChanged();
+  });
+  snapshotTrack(u, track.id);
+  if (input.queue) queue.forEach((id) => snapshotTrack(u, id));
   return true;
 }
 
-function seedTrackList(f: ListFilters<TrackSort>): Track[] {
+function seedTrackList(f: ListFilters<TrackSort>, u: Viewer): Track[] {
   let list = seedTracks
     .map((t) => trackIndex.get(t.id) ?? t)
-    .map(withLike)
+    .map((t) => withLike(t, u))
     .filter(
       (t) =>
         (!f.genre || t.genres.includes(f.genre)) &&
@@ -407,17 +409,18 @@ function seedTrackList(f: ListFilters<TrackSort>): Track[] {
   return list;
 }
 
-function localLikedTracks(f: ListFilters<TrackSort>): Track[] {
-  return tracksByIds([...likedTrackIds]).filter(
+function likedTracksOf(f: ListFilters<TrackSort>, u: Viewer): Track[] {
+  if (!u) return [];
+  return tracksByIds([...u.state.likedTracks.keys()], u).filter(
     (t) => (!f.genre || t.genres.includes(f.genre)) && matches(f.q, t.title, t.artist, t.album)
   );
 }
 
 /** GET /api/tracks — Top charts (popularity), genre filter and search. */
-export async function listTracks(f: ListFilters<TrackSort>): Promise<Track[]> {
+export async function listTracks(f: ListFilters<TrackSort>, u: Viewer): Promise<Track[]> {
   let list: Track[];
   if (f.liked === true) {
-    list = localLikedTracks(f); // likes are ours: answer from the registry
+    list = likedTracksOf(f, u); // likes are ours: answer from the registry
     if (f.sort === "top") list = [...list].sort((a, b) => b.plays - a.plays);
   } else {
     list = await fromJamendo(
@@ -431,19 +434,19 @@ export async function listTracks(f: ListFilters<TrackSort>): Promise<Track[]> {
           params.order = "popularity_month";
           params.groupby = "artist_id"; // one track per artist, as Jamendo recommends for charts
         }
-        const found = await jamendoTracks(params, f.genre ? [f.genre] : []);
+        const found = likeAll(await jamendoTracks(params, f.genre ? [f.genre] : []), u);
         return f.liked === false ? found.filter((t) => !t.liked) : found;
       },
-      () => seedTrackList(f)
+      () => seedTrackList(f, u)
     );
   }
   if (f.sort === "title") list = [...list].sort((a, b) => a.title.localeCompare(b.title));
   return f.limit ? list.slice(0, f.limit) : list;
 }
 
-function seedAlbumList(f: ListFilters<AlbumSort>): AlbumWithTracks[] {
+function seedAlbumList(f: ListFilters<AlbumSort>, u: Viewer): AlbumWithTracks[] {
   let list = seedAlbums
-    .map(withTracks)
+    .map((a) => withTracks(albumIndex.get(a.id) ?? a, u))
     .filter(
       (a) =>
         (!f.genre || a.genres.includes(f.genre)) &&
@@ -455,13 +458,13 @@ function seedAlbumList(f: ListFilters<AlbumSort>): AlbumWithTracks[] {
 }
 
 /** GET /api/albums — New releases, genre filter and search. */
-export async function listAlbums(f: ListFilters<AlbumSort>): Promise<AlbumWithTracks[]> {
+export async function listAlbums(f: ListFilters<AlbumSort>, u: Viewer): Promise<AlbumWithTracks[]> {
   let list: AlbumWithTracks[];
   if (f.liked === true) {
-    list = [...likedAlbumIds]
+    list = [...(u?.state.likedAlbums.keys() ?? [])]
       .map((id) => albumIndex.get(id))
       .filter((a): a is Album => Boolean(a))
-      .map(withTracks)
+      .map((a) => withTracks(a, u))
       .filter((a) => (!f.genre || a.genres.includes(f.genre)) && matches(f.q, a.title, a.artist));
     if (f.sort === "new") list = [...list].sort((a, b) => b.releaseDate.localeCompare(a.releaseDate));
   } else {
@@ -482,11 +485,14 @@ export async function listAlbums(f: ListFilters<AlbumSort>): Promise<AlbumWithTr
           const ids = [...new Set(raw.map((t) => String(t.album_id)).filter((id) => id && id !== "0"))];
           found = await jamendoAlbumsByIds(ids, f.genre ? [f.genre] : []);
         }
-        found = found.filter((a) => a.tracks.length > 0);
+        found = likeAlbums(
+          found.filter((a) => a.tracks.length > 0),
+          u
+        );
         if (f.sort === "new") found = [...found].sort((a, b) => b.releaseDate.localeCompare(a.releaseDate));
         return f.liked === false ? found.filter((a) => !a.liked) : found;
       },
-      () => seedAlbumList(f)
+      () => seedAlbumList(f, u)
     );
   }
   if (f.sort === "title") list = [...list].sort((a, b) => a.title.localeCompare(b.title));
@@ -504,21 +510,22 @@ async function fetchJamendoTrack(jid: string): Promise<Track | undefined> {
 }
 
 /** Known track, or (Jamendo ids only) fetched on demand — e.g. after a server restart. */
-export async function getTrack(id: string): Promise<Track | undefined> {
+export async function getTrack(id: string, u: Viewer): Promise<Track | undefined> {
   const known = trackIndex.get(id);
-  if (known) return withLike(known);
+  if (known) return withLike(known, u);
   const jid = jamendoTrackIdOf(id);
-  return jid ? fetchJamendoTrack(jid) : undefined;
+  const fetched = jid ? await fetchJamendoTrack(jid) : undefined;
+  return fetched && withLike(fetched, u);
 }
 
-export async function getAlbum(id: string): Promise<AlbumWithTracks | undefined> {
+export async function getAlbum(id: string, u: Viewer): Promise<AlbumWithTracks | undefined> {
   const known = albumIndex.get(id);
-  if (known) return withTracks(known);
+  if (known) return withTracks(known, u);
   const jid = jamendoAlbumIdOf(id);
   if (!jid || !jamendoClientId()) return undefined;
   try {
     const [a] = await jamendoAlbumsByIds([jid]);
-    return a;
+    return a && likeAlbums([a], u)[0];
   } catch {
     return undefined;
   }
@@ -534,27 +541,22 @@ export async function upstreamAudioFor(id: string): Promise<string | undefined> 
   return upstreamAudio.get(id);
 }
 
-export async function setTrackLike(id: string, liked: boolean): Promise<Track | undefined> {
-  const track = await getTrack(id);
+export async function setTrackLike(u: UserDoc, id: string, liked: boolean): Promise<Track | undefined> {
+  const track = await getTrack(id, u);
   if (!track) return undefined;
-  if (liked === likedTrackIds.has(id)) return withLike(track);
-  if (liked) {
-    likedTrackIds.add(id);
-    snapshotTrack(id);
-  } else likedTrackIds.delete(id);
-  persistLikes();
-  return withLike(track);
+  if (liked !== trackLiked(id, u)) {
+    u.setTrackLike(id, liked);
+    if (liked) snapshotTrack(u, id);
+  }
+  return withLike(track, u);
 }
 
-export async function setAlbumLike(id: string, liked: boolean): Promise<Album | undefined> {
-  const album = await getAlbum(id);
+export async function setAlbumLike(u: UserDoc, id: string, liked: boolean): Promise<Album | undefined> {
+  const album = await getAlbum(id, u);
   if (!album) return undefined;
-  if (liked !== likedAlbumIds.has(id)) {
-    if (liked) {
-      likedAlbumIds.add(id);
-      snapshotAlbum(id);
-    } else likedAlbumIds.delete(id);
-    persistLikes();
+  if (liked !== albumLiked(id, u)) {
+    u.setAlbumLike(id, liked);
+    if (liked) snapshotAlbum(u, id);
   }
   const { tracks: _t, ...plain } = album;
   return { ...plain, liked };
@@ -604,9 +606,11 @@ async function fillPlaylistsFromJamendo(): Promise<void> {
 
 const FAVOURITES_ID = "p-favourites";
 
-function resolvePlaylist(p: Playlist): Playlist {
+function resolvePlaylist(p: Playlist, u: Viewer): Playlist {
   // "Favourites" always mirrors the liked tracks, in like order.
-  return p.id === FAVOURITES_ID ? { ...p, trackIds: [...likedTrackIds] } : { ...p, trackIds: [...p.trackIds] };
+  return p.id === FAVOURITES_ID
+    ? { ...p, trackIds: [...(u?.state.likedTracks.keys() ?? [])] }
+    : { ...p, trackIds: [...p.trackIds] };
 }
 
 const userPlaylistOut = (p: StoredPlaylist): Playlist => ({
@@ -617,21 +621,21 @@ const userPlaylistOut = (p: StoredPlaylist): Playlist => ({
   trackIds: p.trackIds.filter((id) => trackIndex.has(id)),
 });
 
-export async function listPlaylists(): Promise<Playlist[]> {
+export async function listPlaylists(u: Viewer): Promise<Playlist[]> {
   await fillPlaylistsFromJamendo();
-  return [...playlists.map(resolvePlaylist), ...userState.playlists.map(userPlaylistOut)];
+  return [...playlists.map((p) => resolvePlaylist(p, u)), ...(u?.state.playlists ?? []).map(userPlaylistOut)];
 }
 
-export async function getPlaylist(id: string): Promise<Playlist | undefined> {
+export async function getPlaylist(id: string, u: Viewer): Promise<Playlist | undefined> {
   await fillPlaylistsFromJamendo();
   const p = playlists.find((x) => x.id === id);
-  if (p) return resolvePlaylist(p);
-  const u = userState.playlists.find((x) => x.id === id);
-  return u && userPlaylistOut(u);
+  if (p) return resolvePlaylist(p, u);
+  const own = u?.state.playlists.find((x) => x.id === id);
+  return own && userPlaylistOut(own);
 }
 
-export function playlistTracks(p: Playlist): Track[] {
-  return tracksByIds(p.trackIds);
+export function playlistTracks(p: Playlist, u: Viewer): Track[] {
+  return tracksByIds(p.trackIds, u);
 }
 
 export const MAX_PLAYLISTS = 200;
@@ -647,72 +651,70 @@ export class UserError extends Error {
   }
 }
 
-function findUserPlaylist(id: string): StoredPlaylist {
-  const u = userState.playlists.find((x) => x.id === id);
-  if (u) return u;
+function findUserPlaylist(u: UserDoc, id: string): StoredPlaylist {
+  const own = u.state.playlists.find((x) => x.id === id);
+  if (own) return own;
   const builtin = playlists.find((x) => x.id === id);
   if (builtin) throw new UserError(403, `Playlist "${builtin.name}" is read-only`);
   throw new UserError(404, "Playlist not found");
 }
 
-export async function createPlaylist(name: string, trackIds: string[]): Promise<Playlist> {
-  if (userState.playlists.length >= MAX_PLAYLISTS) {
+export async function createPlaylist(u: UserDoc, name: string, trackIds: string[]): Promise<Playlist> {
+  if (u.state.playlists.length >= MAX_PLAYLISTS) {
     throw new UserError(409, `You can have at most ${MAX_PLAYLISTS} playlists`);
   }
   const ids = [...new Set(trackIds)];
-  for (const id of ids) if (!(await getTrack(id))) throw new UserError(400, `Unknown track id "${id}"`);
+  for (const id of ids) if (!(await getTrack(id, null))) throw new UserError(400, `Unknown track id "${id}"`);
   const now = new Date().toISOString();
   const p: StoredPlaylist = { id: `u-${randomUUID().slice(0, 8)}`, name, trackIds: ids, createdAt: now, updatedAt: now };
-  userState.playlists.push(p);
-  ids.forEach(snapshotTrack);
-  markChanged();
+  ids.forEach((id) => snapshotTrack(u, id));
+  u.savePlaylist(p);
   return userPlaylistOut(p);
 }
 
-export function renamePlaylist(id: string, name: string): Playlist {
-  const p = findUserPlaylist(id);
+export function renamePlaylist(u: UserDoc, id: string, name: string): Playlist {
+  const p = findUserPlaylist(u, id);
   p.name = name;
   p.updatedAt = new Date().toISOString();
-  markChanged();
+  u.savePlaylist(p);
   return userPlaylistOut(p);
 }
 
-export function deletePlaylist(id: string): void {
-  const p = findUserPlaylist(id);
-  userState.playlists = userState.playlists.filter((x) => x !== p);
-  markChanged();
+export function deletePlaylist(u: UserDoc, id: string): void {
+  findUserPlaylist(u, id);
+  u.removePlaylist(id);
 }
 
 /** Adds a track (no-op if already there). On Favourites this likes the track. */
-export async function addTrackToPlaylist(id: string, trackId: string): Promise<Playlist> {
+export async function addTrackToPlaylist(u: UserDoc, id: string, trackId: string): Promise<Playlist> {
   if (id === FAVOURITES_ID) {
-    if (!(await setTrackLike(trackId, true))) throw new UserError(404, "Track not found");
-    return (await getPlaylist(id))!;
+    if (!(await setTrackLike(u, trackId, true))) throw new UserError(404, "Track not found");
+    return (await getPlaylist(id, u))!;
   }
-  const p = findUserPlaylist(id);
-  if (!(await getTrack(trackId))) throw new UserError(404, "Track not found");
+  const p = findUserPlaylist(u, id);
+  if (!(await getTrack(trackId, null))) throw new UserError(404, "Track not found");
   if (!p.trackIds.includes(trackId)) {
     if (p.trackIds.length >= MAX_PLAYLIST_TRACKS) throw new UserError(409, "This playlist is full");
     p.trackIds.push(trackId);
     p.updatedAt = new Date().toISOString();
-    snapshotTrack(trackId);
-    markChanged();
+    snapshotTrack(u, trackId);
+    u.savePlaylist(p);
   }
   return userPlaylistOut(p);
 }
 
 /** Removes a track. On Favourites this unlikes it. 404 if the track is not in the playlist. */
-export async function removeTrackFromPlaylist(id: string, trackId: string): Promise<Playlist> {
+export async function removeTrackFromPlaylist(u: UserDoc, id: string, trackId: string): Promise<Playlist> {
   if (id === FAVOURITES_ID) {
-    if (!likedTrackIds.has(trackId)) throw new UserError(404, "Track is not in this playlist");
-    await setTrackLike(trackId, false);
-    return (await getPlaylist(id))!;
+    if (!trackLiked(trackId, u)) throw new UserError(404, "Track is not in this playlist");
+    await setTrackLike(u, trackId, false);
+    return (await getPlaylist(id, u))!;
   }
-  const p = findUserPlaylist(id);
+  const p = findUserPlaylist(u, id);
   if (!p.trackIds.includes(trackId)) throw new UserError(404, "Track is not in this playlist");
   p.trackIds = p.trackIds.filter((x) => x !== trackId);
   p.updatedAt = new Date().toISOString();
-  markChanged();
+  u.savePlaylist(p);
   return userPlaylistOut(p);
 }
 
@@ -727,44 +729,50 @@ const clampSeconds = (seconds: number, t: Track) =>
  * Records a play, or (with `entryId`) raises the listened seconds of an earlier report of the
  * same play. Returns undefined if the track is unknown.
  */
-export async function reportPlay(trackId: string, seconds: number, entryId?: string): Promise<HistoryEntry | undefined> {
-  const track = await getTrack(trackId);
+export async function reportPlay(
+  u: UserDoc,
+  trackId: string,
+  seconds: number,
+  entryId?: string
+): Promise<HistoryEntry | undefined> {
+  const track = await getTrack(trackId, null);
   if (!track) return undefined;
   const s = clampSeconds(seconds, track);
   if (entryId) {
-    const existing = userState.history.find((h) => h.id === entryId);
-    if (existing && existing.trackId === trackId) {
-      if (s > existing.seconds) {
-        existing.seconds = s;
-        markChanged();
+    // Updates hit recent entries: search from the end.
+    const h = u.state.history;
+    let existing: HistoryEntry | undefined;
+    for (let i = h.length - 1; i >= 0; i--) {
+      if (h[i].id === entryId) {
+        existing = h[i];
+        break;
       }
+    }
+    if (existing && existing.trackId === trackId) {
+      if (s > existing.seconds) u.setHistorySeconds(existing, s);
       return existing;
     }
   }
   const entry: HistoryEntry = { id: randomUUID(), trackId, playedAt: new Date().toISOString(), seconds: s };
-  userState.history.push(entry);
-  if (userState.history.length > MAX_HISTORY) userState.history.splice(0, userState.history.length - MAX_HISTORY);
-  snapshotTrack(trackId);
-  markChanged();
+  snapshotTrack(u, trackId);
+  u.addHistory(entry);
   return entry;
 }
 
 /** Newest first. Entries whose track can no longer be resolved are skipped. */
-export function listHistory(limit: number): HistoryItem[] {
+export function listHistory(u: UserDoc, limit: number): HistoryItem[] {
   const out: HistoryItem[] = [];
-  for (let i = userState.history.length - 1; i >= 0 && out.length < limit; i--) {
-    const h = userState.history[i];
+  const history = u.state.history;
+  for (let i = history.length - 1; i >= 0 && out.length < limit; i--) {
+    const h = history[i];
     const t = trackIndex.get(h.trackId);
-    if (t) out.push({ ...h, track: withLike(t) });
+    if (t) out.push({ ...h, track: withLike(t, u) });
   }
   return out;
 }
 
-export function clearHistory(): number {
-  const n = userState.history.length;
-  userState.history = [];
-  markChanged();
-  return n;
+export function clearHistory(u: UserDoc): number {
+  return u.clearHistory();
 }
 
 function localDate(d: Date): string {
@@ -773,7 +781,7 @@ function localDate(d: Date): string {
 
 type Tally = { plays: number; seconds: number };
 
-export function listeningStats(): ListeningStats {
+export function listeningStats(u: UserDoc): ListeningStats {
   const byTrack = new Map<string, Tally>();
   const byArtist = new Map<string, Tally>();
   const days = new Map<string, Tally>();
@@ -788,7 +796,8 @@ export function listeningStats(): ListeningStats {
     m.set(key, v);
   };
   let totalSeconds = 0;
-  for (const h of userState.history) {
+  const history = u.state.history;
+  for (const h of history) {
     totalSeconds += h.seconds;
     bump(byTrack, h.trackId, h.seconds);
     const t = trackIndex.get(h.trackId);
@@ -800,17 +809,17 @@ export function listeningStats(): ListeningStats {
   const topTracks: ListeningStats["topTracks"] = [];
   for (const [id, v] of [...byTrack].sort((a, b) => rank(a[1], b[1]))) {
     const t = trackIndex.get(id);
-    if (t) topTracks.push({ track: withLike(t), ...v });
+    if (t) topTracks.push({ track: withLike(t, u), ...v });
     if (topTracks.length === 10) break;
   }
   return {
     totalSeconds,
-    plays: userState.history.length,
+    plays: history.length,
     uniqueTracks: byTrack.size,
     uniqueArtists: byArtist.size,
-    likedTracks: likedTrackIds.size,
-    likedAlbums: likedAlbumIds.size,
-    firstPlayedAt: userState.history[0]?.playedAt ?? null,
+    likedTracks: u.state.likedTracks.size,
+    likedAlbums: u.state.likedAlbums.size,
+    firstPlayedAt: history[0]?.playedAt ?? null,
     topTracks,
     topArtists: [...byArtist]
       .sort((a, b) => rank(a[1], b[1]))
@@ -820,26 +829,28 @@ export function listeningStats(): ListeningStats {
   };
 }
 
-export function computeStats(): Stats {
+export function computeStats(u: Viewer): Stats {
+  const likes = (u?.state.likedTracks.size ?? 0) + (u?.state.likedAlbums.size ?? 0);
   return {
     totalHours: statsBase.totalHours,
-    likes: statsBase.likesFromOtherContent + likedTrackIds.size + likedAlbumIds.size,
+    likes: statsBase.likesFromOtherContent + likes,
     tracks: statsBase.tracks,
   };
 }
 
 /** Every album for the "Albums of the Week" page: this week's picks first, then more popular ones. */
-export function allWeekAlbums(): Promise<AlbumWithTracks[]> {
-  return fromJamendo(
+export async function allWeekAlbums(u: Viewer): Promise<AlbumWithTracks[]> {
+  const list = await fromJamendo(
     "Albums of the week (all)",
     async () => {
-      const list = await popularAlbums();
-      const day = list[dayNumber() % Math.min(list.length, 5)];
-      return list.filter((a) => a.id !== day.id);
+      const all = await popularAlbums();
+      const day = all[dayNumber() % Math.min(all.length, 5)];
+      return all.filter((a) => a.id !== day.id);
     },
     () => {
       const rest = seedAlbums.filter((a) => a.id !== seedDayId && !seedWeekIds.includes(a.id)).map((a) => a.id);
-      return [...seedWeekIds, ...rest].map((id) => withTracks(albumIndex.get(id)!));
+      return [...seedWeekIds, ...rest].map((id) => withTracks(albumIndex.get(id)!, null));
     }
   );
+  return likeAlbums(list, u);
 }

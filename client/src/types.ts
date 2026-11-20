@@ -5,6 +5,8 @@ export type {
   AlbumWithTracks,
   AlbumSort,
   ApiError,
+  AuthMode,
+  AuthStatus,
   CatalogSource,
   CatalogStatus,
   CreatePlaylistBody,
@@ -14,6 +16,7 @@ export type {
   HistoryItem,
   ListeningStats,
   ListQuery,
+  MeResponse,
   PlaybackState,
   Playlist,
   PlaylistKind,
@@ -22,4 +25,5 @@ export type {
   Stats,
   Track,
   TrackSort,
+  UpdateMeBody,
 } from "../../server/src/types";
