@@ -1,4 +1,15 @@
-import type { Album, AlbumWithTracks, PlaybackState, Playlist, Stats, Track } from "./types";
+import type {
+  Album,
+  AlbumSort,
+  AlbumWithTracks,
+  Genre,
+  ListQuery,
+  PlaybackState,
+  Playlist,
+  Stats,
+  Track,
+  TrackSort,
+} from "./types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -12,6 +23,17 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Builds "?a=1&b=2", skipping empty values. */
+function qs(params: ListQuery): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    sp.set(key, String(value));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
 const patchLike = (liked: boolean): RequestInit => ({
   method: "PATCH",
   body: JSON.stringify({ liked }),
@@ -20,8 +42,14 @@ const patchLike = (liked: boolean): RequestInit => ({
 export const api = {
   getAlbumOfTheDay: () => request<AlbumWithTracks>("/api/albums/day"),
   getWeekAlbums: () => request<AlbumWithTracks[]>("/api/albums/week"),
+  getAlbums: (params: ListQuery<AlbumSort> = {}, signal?: AbortSignal) =>
+    request<AlbumWithTracks[]>(`/api/albums${qs(params)}`, { signal }),
+  getTracks: (params: ListQuery<TrackSort> = {}, signal?: AbortSignal) =>
+    request<Track[]>(`/api/tracks${qs(params)}`, { signal }),
+  getGenres: (signal?: AbortSignal) => request<Genre[]>("/api/genres", { signal }),
   getPlaylists: () => request<Playlist[]>("/api/playlists"),
-  getPlaylistTracks: (id: string) => request<Track[]>(`/api/playlists/${id}/tracks`),
+  getPlaylist: (id: string) => request<Playlist>(`/api/playlists/${encodeURIComponent(id)}`),
+  getPlaylistTracks: (id: string) => request<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks`),
   getRecentTracks: () => request<Track[]>("/api/tracks/recent"),
   getDailyMix: () => request<Track[]>("/api/tracks/daily-mix"),
   getLastPlayback: () => request<PlaybackState>("/api/player/last"),

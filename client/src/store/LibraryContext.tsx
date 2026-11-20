@@ -11,24 +11,38 @@ import {
 import { api } from "../api";
 import type { Album, AlbumWithTracks, PlaybackState, Playlist, Stats, Track } from "../types";
 
+export const FAVOURITES_ID = "p-favourites";
+
 interface LibraryState {
   loading: boolean;
   error: string | null;
   /** Single source of truth for tracks, so likes stay in sync everywhere. */
   tracks: Record<string, Track>;
+  /** Single source of truth for albums (insertion-ordered). */
+  albums: Record<string, Album>;
+  albumOfTheDayId: string | null;
+  weekAlbumIds: string[];
   recentIds: string[];
   dailyMixIds: string[];
-  albumOfTheDay: Album | null;
-  weekAlbums: Album[];
   playlists: Playlist[];
   stats: Stats | null;
   lastPlayback: PlaybackState | null;
 }
 
-interface LibraryApi extends LibraryState {
+interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumIds"> {
+  albumOfTheDay: Album | null;
+  weekAlbums: Album[];
+  /** Liked albums, live. */
+  likedAlbums: Album[];
+  /** Liked track ids in like order (mirrors the Favourites playlist), live. */
+  likedTrackIds: string[];
   toggleTrackLike: (id: string) => void;
   toggleAlbumLike: (id: string) => void;
   loadPlaylistTracks: (id: string) => Promise<string[]>;
+  /** Adds tracks fetched elsewhere (Explore, search…) to the shared index; returns their ids. */
+  mergeTracks: (list: Track[]) => string[];
+  /** Adds albums (and their tracks) to the shared index; returns their ids. */
+  mergeAlbums: (list: AlbumWithTracks[]) => string[];
   dismissError: () => void;
 }
 
@@ -38,18 +52,25 @@ const initialState: LibraryState = {
   loading: true,
   error: null,
   tracks: {},
+  albums: {},
+  albumOfTheDayId: null,
+  weekAlbumIds: [],
   recentIds: [],
   dailyMixIds: [],
-  albumOfTheDay: null,
-  weekAlbums: [],
   playlists: [],
   stats: null,
   lastPlayback: null,
 };
 
-function indexTracks(list: Track[], into: Record<string, Track> = {}): Record<string, Track> {
-  const next = { ...into };
-  for (const t of list) next[t.id] = t;
+/**
+ * Adds items to an index. Items already known locally are kept as-is: local like state can
+ * be ahead of the server while a PATCH is in flight.
+ */
+function addNew<T extends { id: string }>(index: Record<string, T>, list: T[]): Record<string, T> {
+  const fresh = list.filter((x) => !index[x.id]);
+  if (fresh.length === 0) return index;
+  const next = { ...index };
+  for (const x of fresh) next[x.id] = x;
   return next;
 }
 
@@ -72,22 +93,27 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       api.getDailyMix(),
       api.getStats(),
       api.getLastPlayback(),
+      api.getTracks({ liked: true }),
+      api.getAlbums({ liked: true }),
     ])
-      .then(([day, week, playlists, recent, mix, stats, last]) => {
+      .then(([day, week, playlists, recent, mix, stats, last, likedTracks, likedAlbums]) => {
         if (cancelled) return;
-        const all = [...day.tracks, ...week.flatMap((a) => a.tracks), ...recent, ...mix, last.track];
-        setState({
+        const allAlbums = [day, ...week, ...likedAlbums];
+        const allTracks = [...allAlbums.flatMap((a) => a.tracks), ...recent, ...mix, ...likedTracks, last.track];
+        // Merge (not replace): a page such as Explore may already have added items to the index.
+        setState((s) => ({
           loading: false,
           error: null,
-          tracks: indexTracks(all),
+          tracks: addNew(s.tracks, allTracks),
+          albums: addNew(s.albums, allAlbums.map(stripTracks)),
+          albumOfTheDayId: day.id,
+          weekAlbumIds: week.map((a) => a.id),
           recentIds: recent.map((t) => t.id),
           dailyMixIds: mix.map((t) => t.id),
-          albumOfTheDay: stripTracks(day),
-          weekAlbums: week.map(stripTracks),
           playlists,
           stats,
           lastPlayback: last,
-        });
+        }));
       })
       .catch((e: Error) => {
         if (!cancelled) setState((s) => ({ ...s, loading: false, error: e.message }));
@@ -106,7 +132,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         ...s,
         tracks: { ...s.tracks, [id]: { ...track, liked } },
         playlists: s.playlists.map((p) =>
-          p.id === "p-favourites"
+          p.id === FAVOURITES_ID
             ? { ...p, trackIds: liked ? [...p.trackIds, id] : p.trackIds.filter((x) => x !== id) }
             : p
         ),
@@ -131,14 +157,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const applyAlbumLike = useCallback((id: string, liked: boolean) => {
     setState((s) => {
-      const flip = (a: Album) => (a.id === id ? { ...a, liked } : a);
-      const current =
-        s.albumOfTheDay?.id === id ? s.albumOfTheDay : s.weekAlbums.find((a) => a.id === id);
-      if (!current || current.liked === liked) return s;
+      const album = s.albums[id];
+      if (!album || album.liked === liked) return s;
       return {
         ...s,
-        albumOfTheDay: s.albumOfTheDay ? flip(s.albumOfTheDay) : null,
-        weekAlbums: s.weekAlbums.map(flip),
+        albums: { ...s.albums, [id]: { ...album, liked } },
         stats: s.stats ? { ...s.stats, likes: s.stats.likes + (liked ? 1 : -1) } : s.stats,
       };
     });
@@ -146,8 +169,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const toggleAlbumLike = useCallback(
     (id: string) => {
-      const s = stateRef.current;
-      const album = s.albumOfTheDay?.id === id ? s.albumOfTheDay : s.weekAlbums.find((a) => a.id === id);
+      const album = stateRef.current.albums[id];
       if (!album) return;
       const liked = !album.liked;
       applyAlbumLike(id, liked);
@@ -159,25 +181,51 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [applyAlbumLike]
   );
 
-  const loadPlaylistTracks = useCallback(async (id: string) => {
-    const list = await api.getPlaylistTracks(id);
-    // Keep locally known like state (it may be ahead of an in-flight PATCH).
-    setState((s) => ({
-      ...s,
-      tracks: indexTracks(
-        list.filter((t) => !s.tracks[t.id]),
-        s.tracks
-      ),
-    }));
+  const mergeTracks = useCallback((list: Track[]) => {
+    setState((s) => {
+      const tracks = addNew(s.tracks, list);
+      return tracks === s.tracks ? s : { ...s, tracks };
+    });
     return list.map((t) => t.id);
   }, []);
 
+  const mergeAlbums = useCallback((list: AlbumWithTracks[]) => {
+    setState((s) => {
+      const tracks = addNew(s.tracks, list.flatMap((a) => a.tracks));
+      const albums = addNew(s.albums, list.map(stripTracks));
+      return tracks === s.tracks && albums === s.albums ? s : { ...s, tracks, albums };
+    });
+    return list.map((a) => a.id);
+  }, []);
+
+  const loadPlaylistTracks = useCallback(
+    async (id: string) => mergeTracks(await api.getPlaylistTracks(id)),
+    [mergeTracks]
+  );
+
   const dismissError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
 
-  const value = useMemo<LibraryApi>(
-    () => ({ ...state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, dismissError }),
-    [state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, dismissError]
-  );
+  const value = useMemo<LibraryApi>(() => {
+    const { albumOfTheDayId, weekAlbumIds, ...rest } = state;
+    const albumList = Object.values(state.albums);
+    return {
+      ...rest,
+      albumOfTheDay: albumOfTheDayId ? state.albums[albumOfTheDayId] ?? null : null,
+      weekAlbums: weekAlbumIds.map((id) => state.albums[id]).filter(Boolean),
+      likedAlbums: albumList.filter((a) => a.liked),
+      likedTrackIds:
+        state.playlists.find((p) => p.id === FAVOURITES_ID)?.trackIds ??
+        Object.values(state.tracks)
+          .filter((t) => t.liked)
+          .map((t) => t.id),
+      toggleTrackLike,
+      toggleAlbumLike,
+      loadPlaylistTracks,
+      mergeTracks,
+      mergeAlbums,
+      dismissError,
+    };
+  }, [state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, mergeTracks, mergeAlbums, dismissError]);
 
   return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>;
 }

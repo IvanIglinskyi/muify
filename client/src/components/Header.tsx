@@ -1,24 +1,27 @@
 import { Bell, Search, Settings } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Logo } from "./common";
 
 interface HeaderProps {
   query: string;
   onQueryChange: (q: string) => void;
+  /** Accessible name of the search box; depends on what the current page searches. */
+  searchLabel: string;
 }
 
-export function Header({ query, onQueryChange }: HeaderProps) {
+export function Header({ query, onQueryChange, searchLabel }: HeaderProps) {
   return (
     <header className="app-header">
-      <a href="/" className="brand" aria-label="Muify home">
+      <Link to="/" className="brand" aria-label="Muify home">
         <Logo />
-      </a>
+      </Link>
       <div className="header-right">
         <form className="search" role="search" onSubmit={(e) => e.preventDefault()}>
           <Search size={18} aria-hidden="true" />
           <input
             type="search"
             placeholder="Navigate"
-            aria-label="Search tracks in Daily Mix"
+            aria-label={searchLabel}
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
           />

@@ -1,44 +1,23 @@
-import {
-  BookOpen,
-  Compass,
-  Dumbbell,
-  Flower2,
-  Footprints,
-  Heart,
-  Home,
-  Library,
-  LucideIcon,
-  PartyPopper,
-  Search,
-} from "lucide-react";
+import { Home, Library, LucideIcon, Search } from "lucide-react";
 import { useState } from "react";
+import { NavLink } from "react-router-dom";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
+import { playlistIcon } from "../lib/playlistIcons";
 import { Cover } from "./Cover";
 import { HeartButton } from "./common";
 
-const NAV: { id: string; label: string; icon: LucideIcon }[] = [
-  { id: "home", label: "Home", icon: Home },
-  { id: "explore", label: "Explore", icon: Search },
-  { id: "library", label: "Library", icon: Library },
+const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
+  { to: "/", label: "Home", icon: Home, end: true },
+  { to: "/explore", label: "Explore", icon: Search },
+  { to: "/library", label: "Library", icon: Library },
 ];
-
-// Icons are always shown for Favourites; for the rest only in the collapsed (icon) sidebar.
-const PLAYLIST_ICONS: Record<string, LucideIcon> = {
-  "p-favourites": Heart,
-  "p-gym": Dumbbell,
-  "p-pre-party": PartyPopper,
-  "p-reading": BookOpen,
-  "p-meditation": Flower2,
-  "p-walk": Footprints,
-};
 
 const RECENT_PREVIEW = 7;
 
 export function Sidebar() {
   const { playlists, recentIds, tracks, toggleTrackLike, loadPlaylistTracks } = useLibrary();
   const { current, isPlaying, playTrack } = usePlayer();
-  const [active, setActive] = useState("home");
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
   const [showAllRecent, setShowAllRecent] = useState(false);
 
@@ -60,19 +39,14 @@ export function Sidebar() {
     <aside className="sidebar" aria-label="Sidebar">
       <nav aria-label="Main">
         <ul className="nav-list">
-          {NAV.map(({ id, label, icon: Icon }) => (
-            <li key={id}>
-              <button
-                type="button"
-                className={`nav-item${active === id ? " is-active" : ""}`}
-                aria-current={active === id ? "page" : undefined}
-                onClick={() => setActive(id)}
-                title={label}
-              >
+          {NAV.map(({ to, label, icon: Icon, end }) => (
+            <li key={to}>
+              {/* NavLink sets aria-current="page" on the active route. */}
+              <NavLink to={to} end={end} className={({ isActive }) => `nav-item${isActive ? " is-active" : ""}`} title={label}>
                 <span className="nav-dot" aria-hidden="true" />
                 <Icon size={19} aria-hidden="true" />
                 <span className="label">{label}</span>
-              </button>
+              </NavLink>
             </li>
           ))}
         </ul>
@@ -84,9 +58,10 @@ export function Sidebar() {
         </h2>
         <ul className="playlist-box">
           {playlists.map((p) => {
-            const Icon = PLAYLIST_ICONS[p.id] ?? Compass;
+            const Icon = playlistIcon(p.id);
             return (
               <li key={p.id}>
+                {/* Icons: always for Favourites, for the rest only in the collapsed (icon) sidebar. */}
                 <button
                   type="button"
                   className={`playlist-item${p.icon ? " has-icon" : ""}${activePlaylist === p.id ? " is-active" : ""}`}

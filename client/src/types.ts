@@ -3,9 +3,14 @@
 export type {
   Album,
   AlbumWithTracks,
+  AlbumSort,
   ApiError,
+  Genre,
+  GenreKind,
+  ListQuery,
   PlaybackState,
   Playlist,
   Stats,
   Track,
+  TrackSort,
 } from "../../server/src/types";
