@@ -44,6 +44,8 @@ interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumId
   /** Adds albums (and their tracks) to the shared index; returns their ids. */
   mergeAlbums: (list: AlbumWithTracks[]) => string[];
   dismissError: () => void;
+  /** Shows a message in the app toast (e.g. playback errors). */
+  notify: (message: string) => void;
 }
 
 const LibraryContext = createContext<LibraryApi | null>(null);
@@ -204,6 +206,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   );
 
   const dismissError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
+  const notify = useCallback((message: string) => setState((s) => ({ ...s, error: message })), []);
 
   const value = useMemo<LibraryApi>(() => {
     const { albumOfTheDayId, weekAlbumIds, ...rest } = state;
@@ -224,8 +227,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       mergeTracks,
       mergeAlbums,
       dismissError,
+      notify,
     };
-  }, [state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, mergeTracks, mergeAlbums, dismissError]);
+  }, [state, toggleTrackLike, toggleAlbumLike, loadPlaylistTracks, mergeTracks, mergeAlbums, dismissError, notify]);
 
   return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>;
 }

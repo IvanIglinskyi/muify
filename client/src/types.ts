@@ -5,6 +5,8 @@ export type {
   AlbumWithTracks,
   AlbumSort,
   ApiError,
+  CatalogSource,
+  CatalogStatus,
   Genre,
   GenreKind,
   ListQuery,

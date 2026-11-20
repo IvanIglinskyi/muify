@@ -32,7 +32,7 @@ export function AlbumOfTheDay() {
 
   return (
     <section className="card album-day" aria-labelledby="aotd-title">
-      <Cover seed={`${album.id}-bg`} className="album-day-bg" dim />
+      <Cover seed={`${album.id}-bg`} src={album.coverUrl} className="album-day-bg" dim />
       <svg className="ribbon" viewBox="0 0 560 420" preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <linearGradient id="ribbonGrad" x1="0" x2="1">
@@ -55,7 +55,7 @@ export function AlbumOfTheDay() {
       </div>
 
       <div className="album-day-cover">
-        <Cover seed={album.id} />
+        <Cover seed={album.id} src={album.coverUrl} />
         <button
           type="button"
           className="play-circle"

@@ -1,10 +1,11 @@
 import { ReactNode } from "react";
 import { formatTime } from "../lib/format";
+import { licenseLabel, openExternal } from "../lib/license";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import type { Track } from "../types";
 import { Cover } from "./Cover";
-import { HeartButton, KebabMenu } from "./common";
+import { HeartButton, KebabMenu, type MenuItem } from "./common";
 
 interface TrackTableProps {
   tracks: Track[];
@@ -15,6 +16,20 @@ interface TrackTableProps {
   /** Shown in a full-width row when `tracks` is empty (omit to render nothing). */
   empty?: ReactNode;
   caption?: string;
+}
+
+/** "License (CC …)" and "Open on Jamendo" menu entries for Creative Commons tracks. */
+export function attributionItems(t: Track): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (t.licenseUrl) {
+    const url = t.licenseUrl;
+    items.push({ label: `License: ${licenseLabel(url)}`, onSelect: () => openExternal(url) });
+  }
+  if (t.shareUrl) {
+    const url = t.shareUrl;
+    items.push({ label: "Open on Jamendo", onSelect: () => openExternal(url) });
+  }
+  return items;
 }
 
 /** Track list in the Daily Mix style: cover + title/artist, album, time, like, kebab. */
@@ -55,7 +70,7 @@ export function TrackTable({ tracks, queue, showRank, empty, caption }: TrackTab
                   aria-label={`${isCurrent && isPlaying ? "Pause" : "Play"} ${t.title} by ${t.artist}`}
                 >
                   <span className="thumb">
-                    <Cover seed={t.id} />
+                    <Cover seed={t.id} src={t.coverUrl} />
                     {isCurrent && isPlaying && <span className="eq" aria-hidden="true"><i /><i /><i /></span>}
                   </span>
                   <span className="track-text">
@@ -77,6 +92,7 @@ export function TrackTable({ tracks, queue, showRank, empty, caption }: TrackTab
                   items={[
                     { label: "Play", onSelect: () => playTrack(t.id, ids) },
                     { label: t.liked ? "Remove from favourites" : "Add to favourites", onSelect: () => toggleTrackLike(t.id) },
+                    ...attributionItems(t),
                   ]}
                 />
               </td>

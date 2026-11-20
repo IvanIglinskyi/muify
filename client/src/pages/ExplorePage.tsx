@@ -101,7 +101,7 @@ export function ExplorePage() {
                   className={`genre-tile${active ? " is-active" : ""}`}
                   aria-pressed={active}
                   onClick={() => selectGenre(active ? null : g.id)}
-                  aria-label={`${g.name} (${g.kind}, ${g.trackCount} tracks)`}
+                  aria-label={`${g.name} (${g.kind}${g.trackCount === null ? "" : `, ${g.trackCount} tracks`})`}
                 >
                   <Cover seed={`genre-${g.id}`} />
                   <span className="genre-name">{g.name}</span>

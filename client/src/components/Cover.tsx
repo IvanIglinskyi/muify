@@ -1,15 +1,37 @@
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { artworkFor } from "../lib/art";
 
 interface CoverProps {
   seed: string;
+  /** Real artwork (e.g. Jamendo album image). Falls back to the generated cover if missing or broken. */
+  src?: string;
   className?: string;
   /** Darken the art (used behind text). */
   dim?: boolean;
 }
 
-/** Generative SVG cover art, seeded per album/track id. Decorative. */
-export function Cover({ seed, className, dim }: CoverProps) {
+/** Cover art: the real image when there is one, else generative SVG art seeded per id. Decorative. */
+export function Cover({ src, ...props }: CoverProps) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (src && src !== failedSrc) {
+    const cls = ["cover", "cover-img", props.className, props.dim ? "is-dim" : null].filter(Boolean).join(" ");
+    return (
+      <img
+        className={cls}
+        src={src}
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onError={() => setFailedSrc(src)}
+      />
+    );
+  }
+  return <GeneratedCover {...props} />;
+}
+
+function GeneratedCover({ seed, className, dim }: Omit<CoverProps, "src">) {
   const art = useMemo(() => artworkFor(seed), [seed]);
   const uid = useId().replace(/:/g, "");
   const [c0, c1] = art.palette;

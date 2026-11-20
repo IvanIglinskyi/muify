@@ -1,7 +1,7 @@
 import type { Track } from "../types.js";
 
 // In-memory track catalogue (resets on server restart). All artists are fictional.
-export const tracks: Track[] = [
+const seedDefs: Omit<Track, "source">[] = [
   { id: "t1", title: "Let me free", artist: "MaDk", album: "Never Enough", duration: 223, liked: true, genres: ["electronic", "energy", "workout"], plays: 912_400 },
   { id: "t2", title: "Be Happy", artist: "Kathryn", album: "Surrender", duration: 323, liked: true, genres: ["pop", "party"], plays: 1_204_800 },
   { id: "t3", title: "Set me Again", artist: "Julie", album: "101", duration: 381, liked: false, genres: ["pop", "romance"], plays: 486_100 },
@@ -45,6 +45,9 @@ export const tracks: Track[] = [
   { id: "t39", title: "Northbound", artist: "Sable Moore", album: "Low Light", duration: 266, liked: false, genres: ["acoustic", "chill", "focus"], plays: 189_600 },
   { id: "t40", title: "Morning Ritual", artist: "Pillow Theory", album: "Study Loops Vol. 3", duration: 162, liked: false, genres: ["lo-fi", "chill", "focus"], plays: 588_800 },
 ];
+
+/** Seed catalogue, used when Jamendo is not configured or unavailable. */
+export const tracks: Track[] = seedDefs.map((t) => ({ ...t, source: "seed" }));
 
 export function findTrack(id: string): Track | undefined {
   return tracks.find((t) => t.id === id);

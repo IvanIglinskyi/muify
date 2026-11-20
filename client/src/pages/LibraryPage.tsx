@@ -74,12 +74,13 @@ function PlayAllButton({ ids, name }: { ids: string[]; name: string }) {
 }
 
 function PlaylistArt({ playlist }: { playlist: Playlist }) {
+  const { tracks } = useLibrary();
   const ids = playlist.trackIds.slice(0, 4);
-  if (ids.length < 4) return <Cover seed={playlist.id} />;
+  if (ids.length < 4) return <Cover seed={playlist.id} src={tracks[ids[0]]?.coverUrl} />;
   return (
     <span className="mosaic">
       {ids.map((id) => (
-        <Cover key={id} seed={id} />
+        <Cover key={id} seed={id} src={tracks[id]?.coverUrl} />
       ))}
     </span>
   );

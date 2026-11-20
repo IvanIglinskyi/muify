@@ -10,9 +10,23 @@ export interface Track {
   liked: boolean;
   /** Genre and mood ids (see `Genre`). */
   genres: string[];
-  /** Play count, used to rank the Top charts. */
+  /** Play count, used to rank the Top charts (0 for Jamendo tracks: Jamendo ranks those). */
   plays: number;
+  /** Where the track comes from: the real Jamendo catalogue or the built-in fictional seed. */
+  source: CatalogSource;
+  /** Playable URL on our own API (`/api/tracks/:id/stream`). Absent for seed tracks → simulated playback. */
+  audioUrl?: string;
+  /** Real cover art URL; when absent the client draws a generated SVG cover. */
+  coverUrl?: string;
+  /** Creative Commons licence URL (Jamendo tracks). */
+  licenseUrl?: string;
+  /** Numeric Jamendo track id. */
+  jamendoId?: string;
+  /** Track page on jamendo.com. */
+  shareUrl?: string;
 }
+
+export type CatalogSource = "jamendo" | "seed";
 
 export type GenreKind = "genre" | "mood";
 
@@ -20,8 +34,9 @@ export interface Genre {
   id: string;
   name: string;
   kind: GenreKind;
-  trackCount: number;
-  albumCount: number;
+  /** Matching tracks/albums, or null when unknown (Jamendo catalogue). */
+  trackCount: number | null;
+  albumCount: number | null;
 }
 
 export type TrackSort = "top" | "title";
@@ -50,6 +65,13 @@ export interface Album {
   duration: number;
   liked: boolean;
   trackIds: string[];
+  source: CatalogSource;
+  /** Real cover art URL; when absent the client draws a generated SVG cover. */
+  coverUrl?: string;
+  /** Numeric Jamendo album id. */
+  jamendoId?: string;
+  /** Album page on jamendo.com. */
+  shareUrl?: string;
 }
 
 export interface AlbumWithTracks extends Album {
@@ -61,6 +83,15 @@ export interface Playlist {
   name: string;
   icon?: "heart";
   trackIds: string[];
+}
+
+/** GET /api/status — which catalogue the server is serving right now. */
+export interface CatalogStatus {
+  source: CatalogSource;
+  /** Whether JAMENDO_CLIENT_ID is set on the server (the id itself is never sent). */
+  jamendoConfigured: boolean;
+  /** Last Jamendo error while falling back to seed data, else null. */
+  lastError: string | null;
 }
 
 export interface Stats {

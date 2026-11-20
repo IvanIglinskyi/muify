@@ -2,6 +2,7 @@ import type {
   Album,
   AlbumSort,
   AlbumWithTracks,
+  CatalogStatus,
   Genre,
   ListQuery,
   PlaybackState,
@@ -54,6 +55,7 @@ export const api = {
   getDailyMix: () => request<Track[]>("/api/tracks/daily-mix"),
   getLastPlayback: () => request<PlaybackState>("/api/player/last"),
   getStats: () => request<Stats>("/api/stats"),
+  getStatus: () => request<CatalogStatus>("/api/status"),
   likeTrack: (id: string, liked: boolean) => request<Track>(`/api/tracks/${id}/like`, patchLike(liked)),
   likeAlbum: (id: string, liked: boolean) => request<Album>(`/api/albums/${id}/like`, patchLike(liked)),
 };

@@ -1,4 +1,6 @@
 import {
+  ExternalLink,
+  LoaderCircle,
   Pause,
   Play,
   Repeat,
@@ -11,14 +13,15 @@ import {
   VolumeX,
 } from "lucide-react";
 import { formatTime } from "../lib/format";
+import { licenseLabel } from "../lib/license";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlaybackPosition, usePlayer } from "../store/PlayerContext";
 import { Cover } from "./Cover";
 import { HeartButton, RangeSlider } from "./common";
 
-function Progress({ duration }: { duration: number }) {
+function Progress() {
   const position = usePlaybackPosition();
-  const { seek } = usePlayer();
+  const { seek, duration } = usePlayer();
   const pos = Math.min(position, duration);
   return (
     <div className="progress">
@@ -48,10 +51,34 @@ export function PlayerBar() {
   return (
     <footer className="player" aria-label="Player">
       <div className="player-track">
-        <span className="player-cover">{track ? <Cover seed={track.id} /> : null}</span>
+        <span className="player-cover">{track ? <Cover seed={track.id} src={track.coverUrl} /> : null}</span>
         <div className="player-text">
           <span className="player-title">{track?.title ?? "Nothing playing"}</span>
           <span className="player-artist">{track?.artist ?? "—"}</span>
+          {track && (track.licenseUrl || track.shareUrl) && (
+            <span className="player-credit">
+              {track.licenseUrl && (
+                <a
+                  href={track.licenseUrl}
+                  target="_blank"
+                  rel="noopener noreferrer license"
+                  title={`Licensed under ${licenseLabel(track.licenseUrl)} — opens the licence`}
+                >
+                  {licenseLabel(track.licenseUrl, { short: true })}
+                </a>
+              )}
+              {track.shareUrl && (
+                <a
+                  href={track.shareUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${track.title} by ${track.artist} on Jamendo`}
+                >
+                  Jamendo <ExternalLink size={10} aria-hidden="true" />
+                </a>
+              )}
+            </span>
+          )}
         </div>
         {track && (
           <HeartButton liked={track.liked} label={track.title} size={22} onToggle={() => toggleTrackLike(track.id)} />
@@ -74,11 +101,18 @@ export function PlayerBar() {
         <button
           type="button"
           className="play-main"
-          aria-label={p.isPlaying ? "Pause" : "Play"}
+          aria-label={p.isPlaying ? (p.buffering ? "Pause (loading)" : "Pause") : "Play"}
+          aria-busy={p.isPlaying && p.buffering}
           onClick={p.togglePlay}
           disabled={!track}
         >
-          {p.isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
+          {p.isPlaying && p.buffering ? (
+            <LoaderCircle size={22} className="spin" aria-hidden="true" />
+          ) : p.isPlaying ? (
+            <Pause size={22} fill="currentColor" />
+          ) : (
+            <Play size={22} fill="currentColor" />
+          )}
         </button>
         <button type="button" className="icon-btn" aria-label="Next track" onClick={p.next} disabled={!track}>
           <SkipForward size={20} fill="currentColor" />
@@ -93,7 +127,7 @@ export function PlayerBar() {
         </button>
       </div>
 
-      <Progress duration={track?.duration ?? 0} />
+      <Progress />
 
       <div className="player-volume">
         <button type="button" className="icon-btn" aria-label={p.muted ? "Unmute" : "Mute"} onClick={p.toggleMute}>

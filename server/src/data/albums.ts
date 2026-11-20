@@ -3,10 +3,11 @@ import { tracksByIds } from "./tracks.js";
 
 export const albumOfTheDayId = "a-heaven";
 
-type NewAlbum = Omit<Album, "trackCount" | "duration" | "year">;
+type AlbumDef = Omit<Album, "source">;
+type NewAlbum = Omit<AlbumDef, "trackCount" | "duration" | "year">;
 
 /** Albums whose track list is fully in the catalogue: counts are derived from the tracks. */
-function release(a: NewAlbum): Album {
+function release(a: NewAlbum): AlbumDef {
   const list = tracksByIds(a.trackIds);
   return {
     ...a,
@@ -16,7 +17,7 @@ function release(a: NewAlbum): Album {
   };
 }
 
-export const albums: Album[] = [
+const seedDefs: AlbumDef[] = [
   {
     id: "a-heaven",
     title: "Heaven",
@@ -152,6 +153,9 @@ export const albums: Album[] = [
     trackIds: ["t37", "t38", "t39"],
   }),
 ];
+
+/** Seed catalogue, used when Jamendo is not configured or unavailable. */
+export const albums: Album[] = seedDefs.map((a) => ({ ...a, source: "seed" }));
 
 export const weekAlbumIds = ["a-slow-dance", "a-rain", "a-family-time", "a-getting-young"];
 

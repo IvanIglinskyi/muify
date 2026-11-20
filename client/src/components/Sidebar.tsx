@@ -95,7 +95,7 @@ export function Sidebar() {
                   title={`${t.title} — ${t.artist}`}
                 >
                   <span className="thumb">
-                    <Cover seed={t.id} />
+                    <Cover seed={t.id} src={t.coverUrl} />
                     {isCurrent && isPlaying && <span className="eq" aria-hidden="true"><i /><i /><i /></span>}
                   </span>
                   <span className="recent-text label">

@@ -22,7 +22,7 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
     <li
       className={`album-card${playing ? " is-playing" : ""}${showLike ? " has-like" : ""}${className ? ` ${className}` : ""}`}
     >
-      <Cover seed={a.id} />
+      <Cover seed={a.id} src={a.coverUrl} />
       <button type="button" className="album-card-hit" onClick={play} aria-label={`Play album ${a.title} by ${a.artist}`} />
       <Logo className="logo-xs" />
       <KebabMenu
