@@ -9,10 +9,16 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { tt, type MessageKey } from "../i18n/core";
+import { failedText } from "../lib/errors";
+import { playlistName } from "../lib/names";
 import { useAuth } from "./AuthContext";
-import type { Album, AlbumWithTracks, PlaybackState, Playlist, Stats, Track } from "../types";
+import type { Album, AlbumWithTracks, Artist, FollowedArtist, PlaybackState, Playlist, Recommendations, Stats, Track } from "../types";
 
 export const FAVOURITES_ID = "p-favourites";
+
+/** Recommendations are refetched this long after the last like/unlike (bursts of likes = one request). */
+export const RECS_REFRESH_DEBOUNCE_MS = 1500;
 
 interface LibraryState {
   loading: boolean;
@@ -41,9 +47,13 @@ interface LibraryState {
   lastPlaybackFor: string | null;
   /** Bumped whenever the play history changes (pages showing history/stats refetch). */
   historyVersion: number;
+  /** Followed artists, most recent first (empty for guests). */
+  follows: FollowedArtist[];
+  /** Bumped when likes change (recommendations are refetched, debounced). */
+  tasteVersion: number;
 }
 
-interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumIds"> {
+interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumIds" | "tasteVersion"> {
   albumOfTheDay: Album | null;
   weekAlbums: Album[];
   /** Liked albums, live. */
@@ -70,14 +80,17 @@ interface LibraryApi extends Omit<LibraryState, "albumOfTheDayId" | "weekAlbumId
   reorderPlaylist: (id: string, trackIds: string[]) => Promise<void>;
   /** Turns the public read-only link on/off. Returns the updated playlist or null. */
   setPlaylistShared: (id: string, shared: boolean) => Promise<Playlist | null>;
+  isFollowing: (artistId: string) => boolean;
+  /** Follows / unfollows (optimistic). Guests get the sign-in nudge. */
+  toggleFollow: (artist: Pick<Artist, "id" | "name" | "imageUrl" | "source">) => Promise<void>;
   /** Called by the player after a play was reported: refreshes Recent Plays & history views. */
   historyChanged: () => void;
   clearHistory: () => Promise<boolean>;
   dismissError: () => void;
   dismissInfo: () => void;
-  /** Shows a message in the error toast (e.g. playback errors). */
+  /** Shows a message in the error toast (e.g. playback errors). Already localised text. */
   notify: (message: string) => void;
-  /** Shows a short confirmation toast. */
+  /** Shows a short confirmation toast. Already localised text. */
   notifyInfo: (message: string) => void;
 }
 
@@ -101,6 +114,8 @@ const initialState: LibraryState = {
   lastPlayback: null,
   lastPlaybackFor: null,
   historyVersion: 0,
+  follows: [],
+  tasteVersion: 0,
 };
 
 /**
@@ -131,6 +146,17 @@ function stripTracks({ tracks: _t, ...album }: AlbumWithTracks): Album {
   return album;
 }
 
+/** State fields derived from GET /api/recommendations. */
+function recsState(recs: Recommendations) {
+  const because = recs.becauseYouLiked;
+  return {
+    dailyMixIds: recs.dailyMix.tracks.map((t) => t.id),
+    mixPersonalised: recs.dailyMix.personalised,
+    mixBasedOn: recs.dailyMix.basedOn,
+    because: because ? { artist: because.artist, trackIds: because.tracks.map((t) => t.id) } : null,
+  };
+}
+
 export function LibraryProvider({ children }: { children: ReactNode }) {
   const { identityKey, requireSignIn } = useAuth();
   const [state, setState] = useState<LibraryState>(initialState);
@@ -158,6 +184,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         lastPlayback: null,
         lastPlaybackFor: null,
         historyVersion: s.historyVersion + 1,
+        follows: [],
       }));
     }
     const member = identityKey !== "guest";
@@ -171,11 +198,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       api.getLastPlayback(),
       api.getTracks({ liked: true }),
       api.getAlbums({ liked: true }),
+      member ? api.getFollows().catch(() => [] as FollowedArtist[]) : Promise.resolve([] as FollowedArtist[]),
     ])
-      .then(([day, week, playlists, recent, recs, stats, last, likedTracks, likedAlbums]) => {
+      .then(([day, week, playlists, recent, recs, stats, last, likedTracks, likedAlbums, follows]) => {
+        if (cancelled) return;
         const mix = recs.dailyMix.tracks;
         const because = recs.becauseYouLiked;
-        if (cancelled) return;
         const allAlbums = [day, ...week, ...likedAlbums];
         const allTracks = [
           ...allAlbums.flatMap((a) => a.tracks),
@@ -199,18 +227,16 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           albumOfTheDayId: day.id,
           weekAlbumIds: week.map((a) => a.id),
           recentIds: recent.map((t) => t.id),
-          dailyMixIds: mix.map((t) => t.id),
-          mixPersonalised: recs.dailyMix.personalised,
-          mixBasedOn: recs.dailyMix.basedOn,
-          because: because ? { artist: because.artist, trackIds: because.tracks.map((t) => t.id) } : null,
+          ...recsState(recs),
           playlists,
           stats,
           lastPlayback: last,
           lastPlaybackFor: identityKey,
+          follows,
         }));
       })
       .catch((e: Error) => {
-        if (!cancelled) setState((s) => ({ ...s, loading: false, error: e.message }));
+        if (!cancelled) setState((s) => ({ ...s, loading: false, error: failedText("lib.err.load", e) }));
       });
     return () => {
       cancelled = true;
@@ -219,7 +245,29 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const notify = useCallback((message: string) => setState((s) => ({ ...s, error: message })), []);
   const notifyInfo = useCallback((message: string) => setState((s) => ({ ...s, info: message })), []);
-  const fail = useCallback((what: string) => (e: Error) => notify(`${what}: ${e.message}`), [notify]);
+  const fail = useCallback((what: MessageKey) => (e: unknown) => notify(failedText(what, e)), [notify]);
+
+  // ---- Recommendations follow the listener's taste ----
+  // Likes change the personal Daily Mix / "Because you liked" on the server (its per-user cache is
+  // invalidated); refetch once the listener stops clicking hearts for a moment.
+  const tasteVersion = state.tasteVersion;
+  useEffect(() => {
+    if (tasteVersion === 0) return;
+    const forId = loadedForRef.current;
+    const timer = window.setTimeout(() => {
+      api
+        .getRecommendations()
+        .then((recs) => {
+          if (loadedForRef.current !== forId) return;
+          const list = [...recs.dailyMix.tracks, ...(recs.becauseYouLiked?.tracks ?? [])];
+          setState((s) => ({ ...s, tracks: addNew(s.tracks, list), ...recsState(recs) }));
+        })
+        .catch(() => {
+          /* keep the current mix */
+        });
+    }, RECS_REFRESH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [tasteVersion]);
 
   /** Applies a like flip locally (track + Favourites playlist + Likes stat). */
   const applyTrackLike = useCallback((id: string, liked: boolean) => {
@@ -239,21 +287,23 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const bumpTaste = useCallback(() => setState((s) => ({ ...s, tasteVersion: s.tasteVersion + 1 })), []);
+
   const setTrackLike = useCallback(
     (id: string, liked: boolean) => {
       const track = stateRef.current.tracks[id];
       if (!track || track.liked === liked) return Promise.resolve();
-      if (!requireSignIn("save your favourites")) return Promise.resolve();
+      if (!requireSignIn("signin.what.favourites")) return Promise.resolve();
       applyTrackLike(id, liked); // optimistic
       return api.likeTrack(id, liked).then(
-        () => undefined,
+        () => bumpTaste(),
         (e: Error) => {
           applyTrackLike(id, !liked); // roll back
-          notify(`Could not update like: ${e.message}`);
+          fail("lib.err.like")(e);
         }
       );
     },
-    [applyTrackLike, notify, requireSignIn]
+    [applyTrackLike, fail, requireSignIn, bumpTaste]
   );
 
   const toggleTrackLike = useCallback(
@@ -280,15 +330,18 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       const album = stateRef.current.albums[id];
       if (!album) return;
-      if (!requireSignIn("save albums to your library")) return;
+      if (!requireSignIn("signin.what.albums")) return;
       const liked = !album.liked;
       applyAlbumLike(id, liked);
-      api.likeAlbum(id, liked).catch((e: Error) => {
-        applyAlbumLike(id, !liked);
-        notify(`Could not update like: ${e.message}`);
-      });
+      api.likeAlbum(id, liked).then(
+        () => bumpTaste(),
+        (e: Error) => {
+          applyAlbumLike(id, !liked);
+          fail("lib.err.like")(e);
+        }
+      );
     },
-    [applyAlbumLike, notify, requireSignIn]
+    [applyAlbumLike, fail, requireSignIn, bumpTaste]
   );
 
   const mergeTracks = useCallback((list: Track[]) => {
@@ -321,14 +374,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const createPlaylist = useCallback(
     async (name: string, trackIds: string[] = []) => {
-      if (!requireSignIn("create playlists")) return null;
+      if (!requireSignIn("signin.what.playlists")) return null;
       try {
         const p = await api.createPlaylist({ name, trackIds });
         setState((s) => ({ ...s, playlists: [...s.playlists, p] }));
-        notifyInfo(trackIds.length ? `Created “${p.name}” and added the track` : `Created “${p.name}”`);
+        notifyInfo(tt(trackIds.length ? "lib.createdWithTrack" : "lib.created", { name: p.name }));
         return p;
       } catch (e) {
-        fail("Could not create playlist")(e as Error);
+        fail("lib.err.create")(e);
         return null;
       }
     },
@@ -341,7 +394,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         putPlaylist(await api.renamePlaylist(id, name));
         return true;
       } catch (e) {
-        fail("Could not rename playlist")(e as Error);
+        fail("lib.err.rename")(e);
         return false;
       }
     },
@@ -350,14 +403,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const deletePlaylist = useCallback(
     async (id: string) => {
-      const name = stateRef.current.playlists.find((p) => p.id === id)?.name ?? "Playlist";
+      const p = stateRef.current.playlists.find((x) => x.id === id);
+      const name = p ? playlistName(p) : tt("library.playlist");
       try {
         await api.deletePlaylist(id);
-        setState((s) => ({ ...s, playlists: s.playlists.filter((p) => p.id !== id) }));
-        notifyInfo(`Deleted “${name}”`);
+        setState((s) => ({ ...s, playlists: s.playlists.filter((x) => x.id !== id) }));
+        notifyInfo(tt("lib.deleted", { name }));
         return true;
       } catch (e) {
-        fail("Could not delete playlist")(e as Error);
+        fail("lib.err.delete")(e);
         return false;
       }
     },
@@ -367,21 +421,21 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const addToPlaylist = useCallback(
     async (playlistId: string, trackId: string) => {
       if (playlistId === FAVOURITES_ID) return setTrackLike(trackId, true);
-      if (!requireSignIn("save playlists")) return;
+      if (!requireSignIn("signin.what.savePlaylists")) return;
       const p = stateRef.current.playlists.find((x) => x.id === playlistId);
       if (!p) return;
       if (p.trackIds.includes(trackId)) {
-        notifyInfo(`Already in “${p.name}”`);
+        notifyInfo(tt("lib.alreadyIn", { name: playlistName(p) }));
         return;
       }
       putPlaylist({ ...p, trackIds: [...p.trackIds, trackId] }); // optimistic
       try {
         putPlaylist(await api.addToPlaylist(playlistId, trackId));
-        notifyInfo(`Added to “${p.name}”`);
+        notifyInfo(tt("lib.addedTo", { name: playlistName(p) }));
       } catch (e) {
         const now = stateRef.current.playlists.find((x) => x.id === playlistId);
         if (now) putPlaylist({ ...now, trackIds: now.trackIds.filter((x) => x !== trackId) });
-        fail("Could not add to playlist")(e as Error);
+        fail("lib.err.add")(e);
       }
     },
     [setTrackLike, putPlaylist, notifyInfo, fail, requireSignIn]
@@ -395,10 +449,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       putPlaylist({ ...p, trackIds: p.trackIds.filter((x) => x !== trackId) }); // optimistic
       try {
         putPlaylist(await api.removeFromPlaylist(playlistId, trackId));
-        notifyInfo(`Removed from “${p.name}”`);
+        notifyInfo(tt("lib.removedFrom", { name: playlistName(p) }));
       } catch (e) {
         putPlaylist(p);
-        fail("Could not remove from playlist")(e as Error);
+        fail("lib.err.remove")(e);
       }
     },
     [setTrackLike, putPlaylist, notifyInfo, fail]
@@ -408,10 +462,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     async (id: string, description: string) => {
       try {
         putPlaylist(await api.updatePlaylist(id, { description }));
-        notifyInfo(description ? "Description saved" : "Description removed");
+        notifyInfo(tt(description ? "lib.descriptionSaved" : "lib.descriptionRemoved"));
         return true;
       } catch (e) {
-        fail("Could not save the description")(e as Error);
+        fail("lib.err.description")(e);
         return false;
       }
     },
@@ -427,7 +481,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         putPlaylist(await api.reorderPlaylist(id, trackIds));
       } catch (e) {
         putPlaylist(p);
-        fail("Could not reorder the playlist")(e as Error);
+        fail("lib.err.reorder")(e);
       }
     },
     [putPlaylist, fail]
@@ -438,14 +492,48 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       try {
         const p = await (shared ? api.sharePlaylist(id) : api.unsharePlaylist(id));
         putPlaylist(p);
-        notifyInfo(shared ? "Public link is on — anyone with the link can listen" : "Public link turned off");
+        notifyInfo(tt(shared ? "lib.shareOn" : "lib.shareOff"));
         return p;
       } catch (e) {
-        fail(shared ? "Could not create a public link" : "Could not turn the public link off")(e as Error);
+        fail(shared ? "lib.err.shareOn" : "lib.err.shareOff")(e);
         return null;
       }
     },
     [putPlaylist, notifyInfo, fail]
+  );
+
+  // ---- Following artists ----
+
+  const isFollowing = useCallback((artistId: string) => stateRef.current.follows.some((f) => f.id === artistId), []);
+
+  const toggleFollow = useCallback(
+    async (artist: Pick<Artist, "id" | "name" | "imageUrl" | "source">) => {
+      if (!requireSignIn("signin.what.follow")) return;
+      const before = stateRef.current.follows;
+      const following = before.some((f) => f.id === artist.id);
+      // Optimistic.
+      setState((s) => ({
+        ...s,
+        follows: following
+          ? s.follows.filter((f) => f.id !== artist.id)
+          : [{ id: artist.id, name: artist.name, imageUrl: artist.imageUrl, source: artist.source, followedAt: new Date().toISOString() }, ...s.follows],
+      }));
+      try {
+        if (following) {
+          await api.unfollowArtist(artist.id);
+          notifyInfo(tt("lib.unfollowed", { name: artist.name }));
+        } else {
+          const r = await api.followArtist(artist.id);
+          const saved = r.artist;
+          if (saved) setState((s) => ({ ...s, follows: s.follows.map((f) => (f.id === saved.id ? saved : f)) }));
+          notifyInfo(tt("lib.followed", { name: artist.name }));
+        }
+      } catch (e) {
+        setState((s) => ({ ...s, follows: before }));
+        fail("lib.err.follow")(e);
+      }
+    },
+    [requireSignIn, notifyInfo, fail]
   );
 
   // ---- History ----
@@ -482,14 +570,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [refreshRecent, refreshStats]);
 
   const clearHistory = useCallback(async () => {
-    if (!requireSignIn("keep a listening history")) return false;
+    if (!requireSignIn("signin.what.history")) return false;
     try {
       const { cleared } = await api.clearHistory();
       historyChanged();
-      notifyInfo(cleared ? `Cleared ${cleared} play${cleared === 1 ? "" : "s"} from history` : "History is already empty");
+      notifyInfo(cleared ? tt("lib.historyCleared", { count: cleared }) : tt("lib.historyEmpty"));
       return true;
     } catch (e) {
-      fail("Could not clear history")(e as Error);
+      fail("lib.err.clearHistory")(e);
       return false;
     }
   }, [historyChanged, notifyInfo, fail, requireSignIn]);
@@ -498,7 +586,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const dismissInfo = useCallback(() => setState((s) => ({ ...s, info: null })), []);
 
   const value = useMemo<LibraryApi>(() => {
-    const { albumOfTheDayId, weekAlbumIds, ...rest } = state;
+    const { albumOfTheDayId, weekAlbumIds, tasteVersion: _v, ...rest } = state;
     const albumList = Object.values(state.albums);
     return {
       ...rest,
@@ -524,6 +612,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       setPlaylistDescription,
       reorderPlaylist,
       setPlaylistShared,
+      isFollowing,
+      toggleFollow,
       historyChanged,
       clearHistory,
       dismissError,
@@ -546,6 +636,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     setPlaylistDescription,
     reorderPlaylist,
     setPlaylistShared,
+    isFollowing,
+    toggleFollow,
     historyChanged,
     clearHistory,
     dismissError,

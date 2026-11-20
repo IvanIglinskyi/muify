@@ -88,7 +88,10 @@ function resolveServiceAccountPath(raw: string | undefined): { path: string; tri
 }
 
 function readServiceAccount(file: string): ServiceAccountJson {
-  const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  return parseServiceAccount(JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>);
+}
+
+function parseServiceAccount(raw: Record<string, unknown>): ServiceAccountJson {
   if (
     typeof raw.project_id !== "string" ||
     typeof raw.client_email !== "string" ||
@@ -123,6 +126,19 @@ function resolveConfig(): ResolvedConfig {
     const projectId =
       process.env.FIREBASE_PROJECT_ID?.trim() || process.env.GCLOUD_PROJECT?.trim() || "demo-muify";
     resolved = { info: { mode: "firebase", emulator: true, projectId, reason: null }, databaseURL };
+    return resolved;
+  }
+  // Containers / PaaS: the key can come from an env variable (raw JSON or base64) instead of a file.
+  const inline = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (inline) {
+    try {
+      const text = inline.startsWith("{") ? inline : Buffer.from(inline, "base64").toString("utf8");
+      const sa = parseServiceAccount(JSON.parse(text) as Record<string, unknown>);
+      resolved = { info: { mode: "firebase", emulator: false, projectId: sa.project_id, reason: null }, databaseURL, serviceAccount: sa };
+    } catch (e) {
+      // Never echo the value itself.
+      resolved = local(`FIREBASE_SERVICE_ACCOUNT_JSON is not a valid service-account key (${(e as Error).name})`);
+    }
     return resolved;
   }
   const { path: saPath, tried } = resolveServiceAccountPath(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);

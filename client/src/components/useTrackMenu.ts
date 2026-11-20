@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { tt, useT } from "../i18n";
 import { licenseLabel, openExternal } from "../lib/license";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
@@ -13,11 +14,11 @@ export function attributionItems(t: Track): MenuItem[] {
   const items: MenuItem[] = [];
   if (t.licenseUrl) {
     const url = t.licenseUrl;
-    items.push({ label: `License: ${licenseLabel(url)}`, onSelect: () => openExternal(url) });
+    items.push({ label: tt("menu.license", { license: licenseLabel(url) }), onSelect: () => openExternal(url) });
   }
   if (t.shareUrl) {
     const url = t.shareUrl;
-    items.push({ label: "Open on Jamendo", onSelect: () => openExternal(url) });
+    items.push({ label: tt("common.openJamendo"), onSelect: () => openExternal(url) });
   }
   return items;
 }
@@ -33,92 +34,95 @@ export interface TrackMenuOptions {
 
 /** Ask for a name, create the playlist, optionally with a first track. */
 export function useNewPlaylist() {
+  const t = useT();
   const { prompt } = useDialogs();
   const { createPlaylist } = useLibrary();
   const { requireSignIn } = useAuth();
   return useCallback(
     async (trackIds: string[] = []) => {
-      if (!requireSignIn("create playlists")) return null;
+      if (!requireSignIn("signin.what.playlists")) return null;
       const name = await prompt({
-        title: "New playlist",
-        label: "Playlist name",
-        initial: "My playlist",
-        confirmLabel: "Create",
+        title: t("playlistDialog.newTitle"),
+        label: t("playlistDialog.nameLabel"),
+        initial: t("playlistDialog.defaultName"),
+        confirmLabel: t("playlistDialog.create"),
       });
       return name ? createPlaylist(name, trackIds) : null;
     },
-    [prompt, createPlaylist, requireSignIn]
+    [prompt, createPlaylist, requireSignIn, t]
   );
 }
 
 /** Builds the kebab menu for a track row (shared by every track list). */
 export function useTrackMenu() {
+  const t = useT();
   const { userPlaylists, playlists, toggleTrackLike, addToPlaylist, removeFromPlaylist, notifyInfo } = useLibrary();
   const { playTrack, playNext, addToQueue, current } = usePlayer();
   const navigate = useNavigate();
   const newPlaylist = useNewPlaylist();
 
   return useCallback(
-    (t: Track, o: TrackMenuOptions = {}): MenuItem[] => {
+    (tr: Track, o: TrackMenuOptions = {}): MenuItem[] => {
       const items: MenuItem[] = [];
       if (!o.hidePlayback) {
-        items.push({ label: "Play", onSelect: () => playTrack(t.id, o.queue) });
-        const isCurrent = current?.id === t.id;
+        items.push({ label: t("menu.play"), onSelect: () => playTrack(tr.id, o.queue) });
+        const isCurrent = current?.id === tr.id;
         items.push(
           {
-            label: "Play next",
+            label: t("menu.playNext"),
             disabled: isCurrent,
             onSelect: () => {
-              playNext(t.id);
-              notifyInfo(`“${t.title}” will play next`);
+              playNext(tr.id);
+              notifyInfo(t("menu.willPlayNext", { title: tr.title }));
             },
           },
           {
-            label: "Add to queue",
+            label: t("menu.addToQueue"),
             disabled: isCurrent,
             onSelect: () => {
-              addToQueue(t.id);
-              notifyInfo(`Added “${t.title}” to the queue`);
+              addToQueue(tr.id);
+              notifyInfo(t("menu.addedToQueue", { title: tr.title }));
             },
           }
         );
       }
       items.push({
-        label: "Add to playlist",
+        label: t("menu.addToPlaylist"),
         submenu: [
           ...userPlaylists.map((p) => {
-            const has = p.trackIds.includes(t.id);
+            const has = p.trackIds.includes(tr.id);
             return {
-              label: has ? `${p.name} (added)` : p.name,
+              label: has ? t("menu.added", { name: p.name }) : p.name,
               disabled: has,
-              onSelect: () => void addToPlaylist(p.id, t.id),
+              onSelect: () => void addToPlaylist(p.id, tr.id),
             };
           }),
-          { label: "+ New playlist…", onSelect: () => void newPlaylist([t.id]) },
+          { label: t("menu.newPlaylist"), onSelect: () => void newPlaylist([tr.id]) },
         ],
       });
-      if (t.albumId) {
-        const albumId = t.albumId;
-        items.push({ label: "Go to album", onSelect: () => navigate(`/album/${encodeURIComponent(albumId)}`) });
+      if (tr.albumId) {
+        const albumId = tr.albumId;
+        items.push({ label: t("menu.goToAlbum"), onSelect: () => navigate(`/album/${encodeURIComponent(albumId)}`) });
       }
-      if (t.artistId) {
-        const artistId = t.artistId;
-        items.push({ label: "Go to artist", onSelect: () => navigate(`/artist/${encodeURIComponent(artistId)}`) });
+      if (tr.artistId) {
+        const artistId = tr.artistId;
+        items.push({ label: t("menu.goToArtist"), onSelect: () => navigate(`/artist/${encodeURIComponent(artistId)}`) });
       }
-      items.push({ label: t.liked ? "Remove from favourites" : "Add to favourites", onSelect: () => toggleTrackLike(t.id) });
+      items.push({ label: tr.liked ? t("menu.removeFavourite") : t("menu.addFavourite"), onSelect: () => toggleTrackLike(tr.id) });
       const p = o.playlistId ? playlists.find((x) => x.id === o.playlistId) : undefined;
       // (On Favourites, "Remove from favourites" above already does this.)
       if (p && p.kind === "user") {
         items.push({
-          label: "Remove from this playlist",
+          label: t("menu.removeFromPlaylist"),
           danger: true,
-          onSelect: () => void removeFromPlaylist(p.id, t.id),
+          onSelect: () => void removeFromPlaylist(p.id, tr.id),
         });
       }
-      items.push(...attributionItems(t));
+      items.push(...attributionItems(tr));
       return items;
     },
     [
+      t,
       userPlaylists,
       playlists,
       current,

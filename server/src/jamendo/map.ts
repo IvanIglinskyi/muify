@@ -83,6 +83,30 @@ export interface MappedTrack {
   track: Track;
   /** Real Jamendo stream URL (server-side only). */
   upstreamAudio: string | null;
+  /** Lyrics (null: none) when the answer included them (include=lyrics), else undefined. */
+  lyrics?: string | null;
+}
+
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", "#39": "'", nbsp: " " };
+
+/**
+ * Jamendo lyrics → plain text: <br> become line breaks, other tags are dropped, a few entities are
+ * decoded, blank-line runs are collapsed. Empty → null. (The client renders it as text, never HTML.)
+ */
+export function cleanLyrics(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const text = raw
+    .replace(/\r\n?/g, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(amp|lt|gt|quot|apos|#39|nbsp);/g, (_m, e: string) => ENTITIES[e] ?? "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text ? text.slice(0, 20_000) : null;
 }
 
 export interface MappedAlbum {
@@ -95,8 +119,10 @@ export function mapTrack(raw: JamendoTrack, extraGenres: string[] = [], clientId
   const id = toTrackId(raw.id);
   const upstreamAudio = cleanUrl(raw.audio, { forceHttps: false }) ?? null;
   const genres = [...new Set([...extraGenres, ...genresFromMusicInfo(raw.musicinfo)])];
+  const lyrics = "lyrics" in raw ? cleanLyrics(raw.lyrics) : undefined;
   return {
     upstreamAudio,
+    lyrics,
     track: {
       id,
       title: str(raw.name) || "Untitled",
@@ -114,6 +140,7 @@ export function mapTrack(raw: JamendoTrack, extraGenres: string[] = [], clientId
       shareUrl: scrubClientId(cleanUrl(raw.shareurl) ?? `https://www.jamendo.com/track/${raw.id}`, clientId),
       albumId: raw.album_id && String(raw.album_id) !== "0" ? toAlbumId(raw.album_id) : undefined,
       artistId: artistIdOf(raw.artist_id),
+      ...(lyrics !== undefined ? { hasLyrics: lyrics !== null } : {}),
     },
   };
 }

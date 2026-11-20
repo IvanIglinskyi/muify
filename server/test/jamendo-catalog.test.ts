@@ -8,7 +8,7 @@ import path from "node:path";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { app } from "../src/app.js";
-import { clearRecommendationCache } from "../src/catalog.js";
+import { clearRecommendationCache, clearReleaseCache } from "../src/catalog.js";
 import { setFirebaseServicesForTesting } from "../src/firebase.js";
 import { resetUserStoreForTesting, userStore } from "../src/userStore.js";
 
@@ -66,10 +66,38 @@ const server: Server = createServer((req, res) => {
     res.statusCode = 500;
     return res.end("down");
   }
+  // include=lyrics → every /tracks item carries a lyrics field (track 700 has some, others are empty).
+  if (url.pathname.startsWith("/tracks") && (url.searchParams.get("include") ?? "").split(" ").includes("lyrics")) {
+    const orig = send;
+    const withLyrics = (results: unknown[]) =>
+      orig(results.map((t) => ({ ...(t as object), lyrics: (t as { id: string }).id === "700" ? "Line one<br />Line &amp; two\r\n\r\n\r\nEnd" : "" })));
+    return route(url, withLyrics);
+  }
+  return route(url, send);
+});
+
+const today = new Date().toISOString().slice(0, 10);
+
+function route(url: URL, send: (results: unknown[]) => void) {
   const p = url.pathname.replace(/\/+$/, "");
   const q = url.searchParams;
+  if (p === "/artists" && q.get("namesearch")) {
+    const n = q.get("namesearch")!.toLowerCase();
+    return send([{ id: "7", name: "Artist 7", joindate: "2012-02-02", image: "", shareurl: "https://www.jamendo.com/artist/7" }].filter((a) => a.name.toLowerCase().includes(n)));
+  }
+  if (p === "/albums") {
+    // New releases: artist 7 released an album today (and an old one).
+    const ids = (q.get("artist_id") ?? "").split(" ");
+    const [from] = (q.get("datebetween") ?? "0000-00-00_").split("_");
+    const all = [
+      { id: "7901", name: "Brand New", releasedate: today, artist_id: "7", artist_name: "Artist 7", image: "https://img.test/new" },
+      { id: "7900", name: "Old One", releasedate: "2019-05-05", artist_id: "7", artist_name: "Artist 7", image: "" },
+    ];
+    return send(all.filter((a) => ids.includes(a.artist_id) && a.releasedate >= from));
+  }
   if (p === "/artists") {
     const id = q.get("id");
+    if (id === "8") return send([{ id: "8", name: "Artist 8", joindate: "2013-03-03", image: "", shareurl: "https://www.jamendo.com/artist/8" }]);
     return send(id === "7" ? [{ id: "7", name: "Artist 7", joindate: "2012-02-02", image: `https://img.test/ar7?x=${CLIENT}`, shareurl: "https://www.jamendo.com/artist/7", website: "" }] : []);
   }
   if (p === "/tracks") {
@@ -83,7 +111,7 @@ const server: Server = createServer((req, res) => {
     return send([album(1, 1), album(2, 1), album(3, 1), album(4, 1), album(5, 1), album(6, 1)]);
   }
   send([]);
-});
+}
 
 beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -163,5 +191,87 @@ describe("personalised recommendations (Jamendo)", () => {
     const again = (await request(app).get("/api/tracks/daily-mix")).body;
     expect(requests.length).toBe(n);
     expect(again.map((t: { id: string }) => t.id)).toEqual(r.dailyMix.tracks.map((t: { id: string }) => t.id));
+  });
+});
+
+describe("lyrics (Jamendo include=lyrics)", () => {
+  it("flags tracks with lyrics and serves them as plain text", async () => {
+    const r = await request(app).get("/api/artists/jr7");
+    const t700 = r.body.topTracks.find((t: { id: string }) => t.id === "j700");
+    const t701 = r.body.topTracks.find((t: { id: string }) => t.id === "j701");
+    expect(t700.hasLyrics).toBe(true);
+    expect(t701.hasLyrics).toBe(false);
+    const ly = await request(app).get("/api/tracks/j700/lyrics");
+    expect(ly.status).toBe(200);
+    expect(ly.body).toEqual({ trackId: "j700", lyrics: "Line one\nLine & two\n\nEnd" });
+    expect((await request(app).get("/api/tracks/j701/lyrics")).body.lyrics).toBeNull();
+    expect((await request(app).get("/api/tracks/j424242/lyrics")).status).toBe(404);
+    const call = requests.find((u) => u.pathname.startsWith("/tracks") && u.searchParams.get("artist_id") === "7");
+    expect(call?.searchParams.get("include")).toBe("musicinfo lyrics");
+  });
+});
+
+describe("artist search (Jamendo /artists?namesearch)", () => {
+  it("finds artists by name", async () => {
+    const r = await request(app).get("/api/search?q=artist%207&type=artists");
+    expect(r.status).toBe(200);
+    expect(r.body.artists).toEqual([expect.objectContaining({ id: "jr7", name: "Artist 7", source: "jamendo" })]);
+    const call = requests.find((u) => u.pathname.startsWith("/artists") && u.searchParams.get("namesearch") === "artist 7");
+    expect(call).toBeTruthy();
+    expect(JSON.stringify(r.body)).not.toContain(CLIENT);
+  });
+
+  it("'all' combines tracks, albums and artists", async () => {
+    const r = await request(app).get("/api/search?q=artist");
+    expect(r.body.tracks.length).toBeGreaterThan(0);
+    expect(r.body.artists.length).toBe(1);
+    expect(Array.isArray(r.body.albums)).toBe(true);
+  });
+});
+
+describe("new-release notifications (Jamendo)", () => {
+  it("announces releases since the follow, asking Jamendo at most once per interval", async () => {
+    clearReleaseCache();
+    expect((await request(app).put("/api/artists/jr7/follow")).status).toBe(200);
+    const before = requests.length;
+    const r = await request(app).get("/api/notifications");
+    expect(r.status).toBe(200);
+    const release = r.body.items.find((n: { kind: string }) => n.kind === "release");
+    expect(release).toMatchObject({ id: "rel-ja7901", albumId: "ja7901", artistId: "jr7", albumTitle: "Brand New", releaseDate: today });
+    expect(release.demo).toBeUndefined();
+    expect(r.body.items.some((n: { albumId?: string }) => n.albumId === "ja7900")).toBe(false); // released before the follow
+    const albumCalls = requests.slice(before).filter((u) => u.pathname.startsWith("/albums") && !u.pathname.startsWith("/albums/tracks"));
+    expect(albumCalls).toHaveLength(1);
+    expect(albumCalls[0].searchParams.get("artist_id")).toBe("7");
+    expect(albumCalls[0].searchParams.get("datebetween")).toMatch(new RegExp(`^${today}_`));
+
+    // Within the interval: no new lookup, no duplicates.
+    const n = requests.length;
+    const again = await request(app).get("/api/notifications");
+    expect(requests.length).toBe(n);
+    expect(again.body.items.filter((x: { id: string }) => x.id === "rel-ja7901")).toHaveLength(1);
+  });
+
+  it("the notification's album opens even though it was never loaded", async () => {
+    const r = await request(app).get("/api/albums/ja7901");
+    // The fake /albums/tracks only knows a few albums: 404 is fine, but never a 500.
+    expect([200, 404]).toContain(r.status);
+  });
+
+  it("a failed lookup keeps the old items and backs off", async () => {
+    expect((await request(app).put("/api/artists/jr8/follow")).status).toBe(200); // new follow → lookup due
+    failAll = true;
+    try {
+      const before = requests.length;
+      const r = await request(app).get("/api/notifications");
+      expect(r.status).toBe(200);
+      expect(requests.slice(before).some((u) => u.pathname.startsWith("/albums") && u.searchParams.get("artist_id") === "8")).toBe(true);
+      expect(r.body.items.some((x: { id: string }) => x.id === "rel-ja7901")).toBe(true);
+      const n = requests.length;
+      await request(app).get("/api/notifications");
+      expect(requests.length).toBe(n); // backing off, not retrying on every request
+    } finally {
+      failAll = false;
+    }
   });
 });

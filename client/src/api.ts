@@ -5,17 +5,23 @@ import type {
   ArtistDetails,
   CatalogStatus,
   CreatePlaylistBody,
+  FollowedArtist,
+  FollowResponse,
   Genre,
   HistoryEntry,
   HistoryItem,
   ListeningStats,
   ListQuery,
+  LyricsResponse,
   MeResponse,
+  NotificationsResponse,
   PlaybackState,
   Playlist,
   Recommendations,
   ReportPlayBody,
   SavePlaybackBody,
+  SearchResults,
+  SearchType,
   SharedPlaylist,
   Stats,
   Track,
@@ -158,4 +164,19 @@ export const api = {
   revokeSessions: () => request<void>("/api/me/revoke-sessions", { method: "POST" }),
   exportMyData: () => request<unknown>("/api/me/export"),
   deleteAccount: () => request<void>("/api/me", { method: "DELETE" }),
+  // ---- Following / notifications ----
+  followArtist: (id: string) => request<FollowResponse>(`/api/artists/${enc(id)}/follow`, { method: "PUT" }),
+  unfollowArtist: (id: string) => request<FollowResponse>(`/api/artists/${enc(id)}/follow`, { method: "DELETE" }),
+  getFollows: (signal?: AbortSignal) => request<FollowedArtist[]>("/api/me/follows", { signal }),
+  getNotifications: (signal?: AbortSignal) => request<NotificationsResponse>("/api/notifications", { signal }),
+  markNotificationsRead: (ids: string[] | "all") =>
+    request<NotificationsResponse>("/api/notifications/read", json("POST", ids === "all" ? { all: true } : { ids })),
+  // ---- Search ----
+  search: (q: string, type: SearchType = "all", signal?: AbortSignal) =>
+    request<SearchResults>(`/api/search?q=${enc(q)}&type=${type}`, { signal }),
+  getRecentSearches: (signal?: AbortSignal) => request<string[]>("/api/me/searches", { signal }),
+  addRecentSearch: (q: string) => request<string[]>("/api/me/searches", json("POST", { q })),
+  clearRecentSearches: (q?: string) => request<string[]>(`/api/me/searches${q ? `?q=${enc(q)}` : ""}`, { method: "DELETE" }),
+  // ---- Lyrics ----
+  getLyrics: (trackId: string, signal?: AbortSignal) => request<LyricsResponse>(`/api/tracks/${enc(trackId)}/lyrics`, { signal }),
 };

@@ -14,6 +14,7 @@ import {
 } from "firebase/auth";
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, setAuthBridge } from "../api";
+import { tt, type MessageKey } from "../i18n/core";
 import { authErrorCode, authErrorMessage } from "../lib/authErrors";
 import { firebaseAuth, firebaseConfigured } from "../lib/firebase";
 import type { AuthStatus, MeResponse } from "../types";
@@ -45,20 +46,22 @@ interface AuthApi {
   /** Popup, falling back to a full-page redirect if the popup is blocked. `next` = where to go after a redirect. */
   signInWithGoogle: (next: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  signOut: (message?: string) => Promise<void>;
+  /** `message` = notice shown afterwards (message key). */
+  signOut: (message?: MessageKey) => Promise<void>;
   /** Re-reads the Firebase user (e.g. after email verification) and our profile. */
   refreshUser: () => Promise<void>;
   setMe: (me: MeResponse) => void;
   /** Error from a Google redirect sign-in (shown on the login page). */
   redirectError: string | null;
   clearRedirectError: () => void;
-  /** "Sign in to save" nudge for guests. Returns true if the action may proceed. */
-  requireSignIn: (what: string) => boolean;
-  signInPrompt: string | null;
+  /** "Sign in to save" nudge for guests (`what` = "signin.what.*" key). Returns true if the action may proceed. */
+  requireSignIn: (what: MessageKey) => boolean;
+  /** Message key of what the guest tried to do ("signin.what.*"). */
+  signInPrompt: MessageKey | null;
   dismissSignInPrompt: () => void;
-  /** Message after a forced sign-out (session revoked elsewhere, account deleted…). */
-  notice: string | null;
-  setNotice: (m: string | null) => void;
+  /** Message (key) after a forced sign-out (session revoked elsewhere, account deleted…). */
+  notice: MessageKey | null;
+  setNotice: (m: MessageKey | null) => void;
 }
 
 const AuthContext = createContext<AuthApi | null>(null);
@@ -97,8 +100,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userVersion, setUserVersion] = useState(0);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [redirectError, setRedirectError] = useState<string | null>(null);
-  const [signInPrompt, setSignInPrompt] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [signInPrompt, setSignInPrompt] = useState<MessageKey | null>(null);
+  const [notice, setNotice] = useState<MessageKey | null>(null);
   const tokenRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -126,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, []);
 
-  const signOut = useCallback(async (message?: string) => {
+  const signOut = useCallback(async (message?: MessageKey) => {
     if (firebaseAuth) await fbSignOut(firebaseAuth);
     setMe(null);
     tokenRef.current = null;
@@ -150,9 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       cachedToken: () => tokenRef.current,
       onSessionRejected: (code) =>
-        void signOutRef.current(
-          code === "user-disabled" ? "This account has been disabled." : "You were signed out. Please sign in again."
-        ),
+        void signOutRef.current(code === "user-disabled" ? "signin.forced.disabled" : "signin.forced.signedOut"),
     });
   }, []);
 
@@ -185,13 +186,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [phase, identityKey]);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    if (!firebaseAuth) throw new Error("Sign-in is not configured.");
+    if (!firebaseAuth) throw new Error(tt("signin.notConfigured"));
     await signInWithEmailAndPassword(firebaseAuth, email.trim(), password);
     setNotice(null);
   }, []);
 
   const signUp = useCallback(async (displayName: string, email: string, password: string) => {
-    if (!firebaseAuth) throw new Error("Sign-in is not configured.");
+    if (!firebaseAuth) throw new Error(tt("signin.notConfigured"));
     const cred = await createUserWithEmailAndPassword(firebaseAuth, email.trim(), password);
     const name = displayName.replace(/\s+/g, " ").trim();
     if (name) await updateProfile(cred.user, { displayName: name }).catch(() => {});
@@ -203,7 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async (next: string) => {
     const auth = firebaseAuth;
-    if (!auth) throw new Error("Sign-in is not configured.");
+    if (!auth) throw new Error(tt("signin.notConfigured"));
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
     try {
@@ -220,7 +221,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetPassword = useCallback(async (email: string) => {
-    if (!firebaseAuth) throw new Error("Sign-in is not configured.");
+    if (!firebaseAuth) throw new Error(tt("signin.notConfigured"));
     await sendPasswordResetEmail(firebaseAuth, email.trim());
   }, []);
 
@@ -236,9 +237,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const canSave = phase === "local" || phase === "user";
   const requireSignIn = useCallback(
-    (what: string) => {
+    (what: MessageKey) => {
       if (canSave) return true;
-      setSignInPrompt(`Sign in to ${what}`);
+      setSignInPrompt(what);
       return false;
     },
     [canSave]

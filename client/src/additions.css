@@ -1,0 +1,585 @@
+/* Search page, notifications, follow, language switch, player extras (speed / sleep timer /
+   lyrics), touch reordering and other additions. Same palette and radii as the mockup. */
+
+/* ---- Skip link ---- */
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: -60px;
+  z-index: 100;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition: top 0.15s;
+}
+.skip-link:focus {
+  top: 12px;
+}
+.main:focus {
+  outline: none;
+}
+
+.pill-btn.small {
+  padding: 8px 18px;
+  font-size: 13px;
+  box-shadow: none;
+}
+
+/* ---- Notifications bell ---- */
+.bell-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+.bell-badge {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: #1b1220;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 17px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg-chrome);
+}
+.bell .popover {
+  width: 350px;
+}
+.notif-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.notif-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.notif-list {
+  display: grid;
+  gap: 4px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 0;
+  list-style: none;
+  scrollbar-width: thin;
+}
+.notif-row {
+  display: flex;
+  align-items: center;
+  border-radius: 12px;
+}
+.notif-row.is-unread {
+  background: rgba(255, 154, 31, 0.08);
+}
+.notif-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.notif-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 6px;
+  text-align: left;
+  border-radius: 12px;
+}
+.notif-art {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--card-2), var(--card-1));
+  color: var(--accent);
+}
+.notif-art .cover {
+  width: 100%;
+  height: 100%;
+}
+.notif-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.notif-text strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+.notif-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  color: var(--text-2);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.notif-body svg {
+  vertical-align: -1px;
+}
+.notif-demo {
+  margin-left: 4px;
+  font-size: 9.5px;
+}
+.notif-time {
+  font-size: 11px;
+  color: var(--text-2);
+  opacity: 0.85;
+}
+.notif-dot {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.notif-read {
+  width: 30px;
+  height: 30px;
+  color: var(--text-2);
+}
+.popover-empty small {
+  color: var(--text-2);
+  opacity: 0.85;
+}
+
+/* ---- Language switch (segmented control) ---- */
+.settings-grow {
+  flex: 1;
+  min-width: 0;
+}
+.lang-switch {
+  display: inline-flex;
+  margin-top: 8px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--line);
+}
+.lang-option {
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-2);
+  transition: background-color 0.15s, color 0.15s;
+}
+.lang-option:hover {
+  color: var(--text);
+}
+.lang-option.is-on {
+  background: var(--accent);
+  color: #1b1220;
+}
+.lang-switch.is-compact .lang-option {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* ---- Follow button / artist cards ---- */
+.follow-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  transition: background-color 0.15s, color 0.15s;
+}
+.follow-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.follow-btn.is-on {
+  background: var(--accent-soft);
+}
+.follow-btn.small {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.artist-grid {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+.artist-card {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 18px 14px 16px;
+  border-radius: var(--radius);
+  background: linear-gradient(160deg, var(--card-2), var(--card-1));
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.artist-card.skeleton {
+  min-height: 210px;
+}
+.artist-card-link {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 100%;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 12px;
+}
+.artist-card-art {
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 3px rgba(255, 154, 31, 0.35);
+}
+.artist-card-art .cover {
+  width: 100%;
+  height: 100%;
+}
+.artist-card-name {
+  max-width: 100%;
+  font-weight: 700;
+  font-size: 15px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.artist-card:hover .artist-card-name {
+  color: var(--accent);
+}
+.artist-card .track-artist {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ---- Search page ---- */
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px 10px 4px;
+  border-bottom: 2px solid #c98a3e;
+  color: var(--text-2);
+}
+.search-box:focus-within {
+  border-bottom-color: var(--accent);
+}
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 20px;
+  letter-spacing: 0.03em;
+  outline: none;
+}
+.search-box input::placeholder {
+  color: var(--text-2);
+}
+.search-box input::-webkit-search-cancel-button {
+  display: none;
+}
+.search-tabs .tab {
+  background: none;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+.search-results {
+  display: grid;
+  gap: 24px;
+}
+.search-results > div {
+  display: grid;
+  gap: 24px;
+}
+.search-section {
+  display: grid;
+  gap: 4px;
+}
+.section-title.small {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.recent-search-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.recent-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px 2px 2px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+}
+.recent-search-q {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.recent-search-q:hover {
+  color: var(--accent);
+}
+.recent-search .icon-btn {
+  width: 28px;
+  height: 28px;
+  color: var(--text-2);
+}
+.full-search-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+/* ---- Player: extras column (lyrics, speed + sleep timer) ---- */
+.player {
+  grid-template-columns: minmax(0, 290px) auto minmax(0, 1fr) auto 150px;
+}
+.player-extras {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.lyrics-btn.is-on,
+.options-icon.is-on {
+  color: var(--accent);
+}
+.options-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.player-options > .icon-btn {
+  width: auto;
+  min-width: 36px;
+  padding: 0 8px;
+  border-radius: 18px;
+}
+.options-badge {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.player-options .popover {
+  top: auto;
+  bottom: calc(100% + 12px);
+  width: 300px;
+}
+.options-panel .popover-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.options-panel .popover-title + .chip-group {
+  margin-bottom: 14px;
+}
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-2);
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.chip:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.chip.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1b1220;
+}
+.sleep-status:empty {
+  display: none;
+}
+
+/* ---- Lyrics panel (reuses the queue panel frame) ---- */
+.lyrics-panel .section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.lyrics-track {
+  display: grid;
+  gap: 2px;
+}
+.lyrics-track strong {
+  font-size: 17px;
+}
+.lyrics-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  line-height: 1.75;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  border-radius: 10px;
+}
+
+/* ---- Queue rows: title button stretches over the row, artist link on top ---- */
+.queue-main {
+  position: relative;
+}
+.queue-jump {
+  display: block;
+  max-width: 100%;
+  text-align: left;
+}
+.queue-jump::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+}
+.queue-jump:focus-visible {
+  outline: none;
+}
+.queue-jump:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.queue-main .artist-link {
+  position: relative;
+  z-index: 1;
+}
+.queue-row:hover .queue-jump .track-title {
+  color: var(--accent);
+}
+
+/* ---- Reorder handle: pointer-based drag (mouse, touch, pen) + arrow keys ---- */
+.mix-table .drag-handle {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 40px;
+  border-radius: 8px;
+  color: var(--text-2);
+  cursor: grab;
+  /* The finger drags the row instead of scrolling the page. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mix-table .drag-handle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.mix-table .drag-handle:active,
+.mix-table.is-dragging-table .drag-handle {
+  cursor: grabbing;
+}
+.mix-table.is-dragging-table {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mix-table tr.is-dragging td {
+  background: rgba(255, 154, 31, 0.08);
+}
+
+/* Sidebar "Recent Plays": grid items must not grow to their (long) title's width. */
+.recent-item {
+  min-width: 0;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 960px) {
+  .player {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Notifications now carry real content: keep the bell on phones too. */
+  .header-right .bell {
+    display: block;
+  }
+  .bell .popover {
+    position: fixed;
+    top: calc(var(--header-h) - 4px);
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+  }
+  .player {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "track controls"
+      "progress extras";
+  }
+  .player-extras {
+    grid-area: extras;
+  }
+  .player-options .popover {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--player-h) + 8px);
+    width: auto;
+    max-width: none;
+  }
+  .search-box input {
+    font-size: 17px;
+  }
+  .search-box .pill-btn {
+    padding: 8px 14px;
+  }
+  .artist-grid {
+    grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  }
+  .artist-card-art {
+    width: 92px;
+    height: 92px;
+  }
+  .hero-actions {
+    flex-wrap: wrap;
+  }
+}

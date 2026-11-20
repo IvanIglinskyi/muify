@@ -24,6 +24,16 @@ import {
 } from "./jamendo/map.js";
 import type { JamendoAlbum, JamendoArtist, JamendoTrack } from "./jamendo/types.js";
 import {
+  ARTIST_RELEASES_TTL_MS,
+  newestFirst,
+  releaseNotifications,
+  RETRY_AFTER_FAILURE_MS,
+  shouldCheck,
+  welcomeNotification,
+
+  type ReleaseCandidate,
+} from "./notifications.js";
+import {
   artistKey,
   buildProfile,
   hashString,
@@ -38,9 +48,14 @@ import type {
   Album,
   AlbumSort,
   AlbumWithTracks,
+  AppNotification,
   Artist,
   ArtistDetails,
   CatalogStatus,
+  FollowedArtist,
+  NotificationsResponse,
+  SearchResults,
+  SearchType,
   Genre,
   HistoryEntry,
   HistoryItem,
@@ -54,7 +69,7 @@ import type {
   TrackSort,
 } from "./types.js";
 import { authMode, firebaseConfigInfo } from "./firebase.js";
-import { LOCAL_UID, setDocHooks, userStore, type StoredPlaylist, type UserDoc } from "./userStore.js";
+import { LOCAL_UID, MAX_FOLLOWS, MAX_SEARCHES, setDocHooks, userStore, type StoredFollow, type StoredPlaylist, type UserDoc } from "./userStore.js";
 
 /** Artist page id of a seed (fictional) artist: "sa-<slug of the name>". */
 export function seedArtistId(name: string): string {
@@ -78,6 +93,9 @@ const trackIndex = new Map<string, Track>();
 const albumIndex = new Map<string, Album>();
 /** Real Jamendo stream URLs (contain the client id) — server-side only. */
 const upstreamAudio = new Map<string, string>();
+/** Lyrics of Jamendo tracks (null = Jamendo has none). Absent = not known yet. */
+const lyricsIndex = new Map<string, string | null>();
+const MAX_LYRICS_ENTRIES = 5000;
 
 const seedAlbumOfTrack = new Map<string, string>();
 for (const a of seedAlbums) for (const tid of a.trackIds) if (!seedAlbumOfTrack.has(tid)) seedAlbumOfTrack.set(tid, a.id);
@@ -115,7 +133,7 @@ function snapshotAlbum(u: UserDoc, id: string) {
   a.trackIds.forEach((t) => snapshotTrack(u, t));
 }
 
-function registerTrack({ track, upstreamAudio: audio }: MappedTrack): Track {
+function registerTrack({ track, upstreamAudio: audio, lyrics }: MappedTrack): Track {
   const known = trackIndex.get(track.id);
   // A track seen via /tracks has richer data (genres from musicinfo) than via /albums/tracks.
   const merged: Track = known
@@ -126,11 +144,17 @@ function registerTrack({ track, upstreamAudio: audio }: MappedTrack): Track {
         coverUrl: track.coverUrl ?? known.coverUrl,
         albumId: track.albumId ?? known.albumId,
         artistId: track.artistId ?? known.artistId,
+        hasLyrics: track.hasLyrics ?? known.hasLyrics,
       }
     : track;
   merged.liked = false;
+  if (merged.hasLyrics === undefined) delete merged.hasLyrics;
   trackIndex.set(merged.id, merged);
   if (audio) upstreamAudio.set(merged.id, audio);
+  if (lyrics !== undefined) {
+    if (lyricsIndex.size >= MAX_LYRICS_ENTRIES) lyricsIndex.delete(lyricsIndex.keys().next().value!);
+    lyricsIndex.set(merged.id, lyrics);
+  }
   return merged;
 }
 
@@ -209,11 +233,11 @@ async function fromJamendo<T>(label: string, jamendo: () => Promise<T>, seed: ()
  * Jamendo sometimes answers `groupby=artist_id` queries with an empty list (seen on a cold cache)
  * and the full list a moment later. Retry once without grouping and keep one track per artist.
  */
-async function groupedByArtist(params: JamendoParams): Promise<Track[]> {
-  const grouped = await jamendoTracks({ ...params, groupby: "artist_id" });
+async function groupedByArtist(params: JamendoParams, genres: string[] = []): Promise<Track[]> {
+  const grouped = await jamendoTracks({ ...params, groupby: "artist_id" }, genres);
   if (grouped.length) return grouped;
   const seen = new Set<string>();
-  return (await jamendoTracks(params)).filter((t) => !seen.has(t.artist) && Boolean(seen.add(t.artist)));
+  return (await jamendoTracks(params, genres)).filter((t) => !seen.has(t.artist) && Boolean(seen.add(t.artist)));
 }
 
 /** Home sections must never be empty: treat an empty Jamendo answer as a failure. */
@@ -241,7 +265,8 @@ export function catalogStatus(): CatalogStatus {
 // ---------------------------------------------------------------------------
 // Jamendo queries (results carry no likes; the public functions apply the viewer's likes)
 // ---------------------------------------------------------------------------
-const TRACK_PARAMS: JamendoParams = { include: "musicinfo", audioformat: "mp32", imagesize: 300 };
+// Lyrics come along with every /tracks answer (so the player knows whether to offer them).
+const TRACK_PARAMS: JamendoParams = { include: "musicinfo lyrics", audioformat: "mp32", imagesize: 300 };
 const ALBUM_PARAMS: JamendoParams = { audioformat: "mp32", imagesize: 500 };
 const MAX_JAMENDO_LIMIT = 200;
 
@@ -500,6 +525,11 @@ export function clearRecommendationCache() {
   recCache.clear();
 }
 
+/** The listener's taste changed (like/unlike): their recommendations are rebuilt on the next request. */
+function tasteChanged(u: UserDoc) {
+  recCache.delete(u.uid);
+}
+
 /** Default "Recent plays" (used while the listener has no play history yet). */
 function defaultRecentTracks(): Promise<Track[]> {
   return fromJamendo(
@@ -625,9 +655,11 @@ export async function listTracks(f: ListFilters<TrackSort>, u: Viewer): Promise<
           if (f.sort === "top") params.boost = "popularity_month"; // keep search relevance first
         } else if (f.sort === "top") {
           params.order = "popularity_month";
-          params.groupby = "artist_id"; // one track per artist, as Jamendo recommends for charts
         }
-        const found = likeAll(await jamendoTracks(params, f.genre ? [f.genre] : []), u);
+        const genres = f.genre ? [f.genre] : [];
+        // Charts: one track per artist, as Jamendo recommends (with the cold-cache retry).
+        const raw = !f.q && f.sort === "top" ? await groupedByArtist(params, genres) : await jamendoTracks(params, genres);
+        const found = likeAll(raw, u);
         return f.liked === false ? found.filter((t) => !t.liked) : found;
       },
       () => seedTrackList(f, u)
@@ -731,7 +763,7 @@ const ARTIST_TOP_TRACKS = 10;
 const ARTIST_ALBUMS = 24;
 
 /** Artist page from what the server already knows (seed data, or Jamendo items seen before). */
-function artistFromRegistry(id: string, u: Viewer): ArtistDetails | undefined {
+function artistFromRegistry(id: string, u: Viewer): Omit<ArtistDetails, "following"> | undefined {
   const tracks = [...trackIndex.values()].filter((t) => t.artistId === id);
   const albums = [...albumIndex.values()].filter((a) => a.artistId === id);
   const name = tracks[0]?.artist ?? albums[0]?.artist;
@@ -757,6 +789,11 @@ function artistFromRegistry(id: string, u: Viewer): ArtistDetails | undefined {
  * server already knows about the artist, else throws a 502 UserError.
  */
 export async function getArtist(id: string, u: Viewer): Promise<ArtistDetails | undefined> {
+  const details = await artistDetails(id, u);
+  return details && { ...details, following: Boolean(u?.state.follows.has(id)) };
+}
+
+async function artistDetails(id: string, u: Viewer): Promise<Omit<ArtistDetails, "following"> | undefined> {
   const jid = jamendoArtistIdOf(id);
   if (!jid) return id.startsWith("sa-") ? artistFromRegistry(id, u) : undefined;
   if (!jamendoClientId()) return artistFromRegistry(id, u);
@@ -800,6 +837,7 @@ export async function setTrackLike(u: UserDoc, id: string, liked: boolean): Prom
   if (liked !== trackLiked(id, u)) {
     u.setTrackLike(id, liked);
     if (liked) snapshotTrack(u, id);
+    tasteChanged(u);
   }
   return withLike(track, u);
 }
@@ -810,6 +848,7 @@ export async function setAlbumLike(u: UserDoc, id: string, liked: boolean): Prom
   if (liked !== albumLiked(id, u)) {
     u.setAlbumLike(id, liked);
     if (liked) snapshotAlbum(u, id);
+    tasteChanged(u);
   }
   const { tracks: _t, ...plain } = album;
   return { ...plain, liked };
@@ -1188,4 +1227,253 @@ export async function allWeekAlbums(u: Viewer): Promise<AlbumWithTracks[]> {
     }
   );
   return likeAlbums(list, u);
+}
+
+// ---------------------------------------------------------------------------
+// Lyrics (Jamendo include=lyrics)
+// ---------------------------------------------------------------------------
+/**
+ * Lyrics of a track: a string, null when there are none (seed tracks never have any), or
+ * undefined when the track is unknown.
+ */
+export async function getLyrics(id: string): Promise<string | null | undefined> {
+  const track = await getTrack(id, null);
+  if (!track) return undefined;
+  if (track.source !== "jamendo") return null;
+  if (!lyricsIndex.has(id)) {
+    const jid = jamendoTrackIdOf(id);
+    if (jid) await fetchJamendoTrack(jid); // /tracks answers include the lyrics
+  }
+  return lyricsIndex.get(id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Following artists
+// ---------------------------------------------------------------------------
+function followOut(id: string, f: StoredFollow): FollowedArtist {
+  return {
+    id,
+    name: f.name,
+    source: f.source,
+    followedAt: new Date(f.at).toISOString(),
+    ...(f.imageUrl ? { imageUrl: f.imageUrl } : {}),
+  };
+}
+
+/** Followed artists, most recent follow first. */
+export function listFollows(u: UserDoc): FollowedArtist[] {
+  return [...u.state.follows].reverse().map(([id, f]) => followOut(id, f));
+}
+
+/** Follows (idempotent: the original follow date is kept). Undefined if the artist doesn't exist. */
+export async function followArtist(u: UserDoc, id: string): Promise<FollowedArtist | undefined> {
+  const existing = u.state.follows.get(id);
+  if (existing) return followOut(id, existing);
+  if (u.state.follows.size >= MAX_FOLLOWS) throw new UserError(409, `You can follow at most ${MAX_FOLLOWS} artists`);
+  const artist = await artistDetails(id, null);
+  if (!artist) return undefined;
+  const follow: StoredFollow = { name: artist.name, source: artist.source, at: Date.now() };
+  if (artist.imageUrl?.startsWith("https://")) follow.imageUrl = artist.imageUrl;
+  u.setFollow(id, follow);
+  return followOut(id, follow);
+}
+
+export function unfollowArtist(u: UserDoc, id: string): void {
+  u.setFollow(id, null);
+}
+
+// ---------------------------------------------------------------------------
+// Notifications: new releases of followed artists (+ a welcome notice)
+// ---------------------------------------------------------------------------
+/** Release lists per artist, shared by every listener (Jamendo is asked at most every 6 h per artist). */
+const releaseCache = new Map<string, { until: number; releases: ReleaseCandidate[] }>();
+const RELEASE_CACHE_MAX = 2000;
+const notifInflight = new Map<string, Promise<void>>();
+/** uid → no lookups before this time (after a failed lookup). In memory only. */
+const notifBackoff = new Map<string, number>();
+/** Jamendo artist ids per /albums request. */
+const RELEASE_BATCH = 20;
+
+/** Demo catalogue: the artist's newest seed album stands in for a "new release". */
+function seedReleases(artistId: string): ReleaseCandidate[] {
+  const newest = [...albumIndex.values()]
+    .filter((a) => a.source === "seed" && a.artistId === artistId)
+    .sort((a, b) => b.releaseDate.localeCompare(a.releaseDate))[0];
+  return newest
+    ? [{ albumId: newest.id, albumTitle: newest.title, artistId, artistName: newest.artist, coverUrl: newest.coverUrl, releaseDate: newest.releaseDate, demo: true }]
+    : [];
+}
+
+/** Recent Jamendo albums of the given artists (released on/after `since`), one request per batch. */
+async function jamendoReleases(artistIds: string[], since: string): Promise<ReleaseCandidate[]> {
+  const out: ReleaseCandidate[] = [];
+  const clientId = jamendoClientId();
+  for (let i = 0; i < artistIds.length; i += RELEASE_BATCH) {
+    const batch = artistIds.slice(i, i + RELEASE_BATCH);
+    const raw = await jamendoGet<JamendoAlbum>("albums", {
+      artist_id: batch.map((id) => jamendoArtistIdOf(id)).join(" "),
+      datebetween: `${since}_${new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)}`,
+      order: "releasedate_desc",
+      imagesize: 300,
+      limit: 100,
+    });
+    for (const a of raw) {
+      const { album } = mapAlbum(a, [], clientId);
+      if (!album.artistId || !/^\d{4}-\d{2}-\d{2}$/.test(album.releaseDate)) continue;
+      out.push({
+        albumId: album.id,
+        albumTitle: album.title,
+        artistId: album.artistId,
+        artistName: album.artist,
+        coverUrl: album.coverUrl,
+        releaseDate: album.releaseDate,
+      });
+    }
+  }
+  return out;
+}
+
+/** Releases of the followed artists, from the shared cache where fresh. Throws if Jamendo fails. */
+async function releasesFor(follows: Map<string, StoredFollow>): Promise<ReleaseCandidate[]> {
+  const now = Date.now();
+  const out: ReleaseCandidate[] = [];
+  const stale: string[] = [];
+  for (const id of follows.keys()) {
+    if (!jamendoArtistIdOf(id)) {
+      out.push(...seedReleases(id));
+      continue;
+    }
+    const hit = releaseCache.get(id);
+    if (hit && hit.until > now) out.push(...hit.releases);
+    else stale.push(id);
+  }
+  if (stale.length && jamendoClientId()) {
+    // Only releases since the oldest relevant follow matter.
+    const oldest = Math.min(...stale.map((id) => follows.get(id)!.at));
+    const since = new Date(oldest).toISOString().slice(0, 10);
+    const found = await jamendoReleases(stale, since);
+    for (const id of stale) {
+      const releases = found.filter((r) => r.artistId === id);
+      if (releaseCache.size >= RELEASE_CACHE_MAX) releaseCache.delete(releaseCache.keys().next().value!);
+      releaseCache.set(id, { until: now + ARTIST_RELEASES_TTL_MS, releases });
+      out.push(...releases);
+    }
+  }
+  return out;
+}
+
+async function refreshNotifications(u: UserDoc): Promise<void> {
+  const s = u.state;
+  const now = Date.now();
+  if (s.notifCheckedAt === null && s.notifications.size === 0) u.addNotifications([welcomeNotification(now)]);
+  if (!shouldCheck(s.notifCheckedAt, [...s.follows.values()].map((f) => f.at), now)) return;
+  if ((notifBackoff.get(u.uid) ?? 0) > now) return;
+  try {
+    const releases = await releasesFor(s.follows);
+    u.addNotifications(releaseNotifications(s.follows, releases, new Set(s.notifications.keys()), now));
+    u.setNotifCheckedAt(now);
+    notifBackoff.delete(u.uid);
+  } catch (e) {
+    console.warn(`[notifications] New-release lookup failed: ${(e as Error).message}`);
+    // Next attempt in RETRY_AFTER_FAILURE_MS, not on every request.
+    if (notifBackoff.size > 10_000) notifBackoff.clear();
+    notifBackoff.set(u.uid, now + RETRY_AFTER_FAILURE_MS);
+  }
+}
+
+function notificationsOut(u: UserDoc): NotificationsResponse {
+  const items = newestFirst(u.state.notifications.values());
+  return {
+    items,
+    unread: items.filter((n) => !n.read).length,
+    checkedAt: u.state.notifCheckedAt === null ? null : new Date(u.state.notifCheckedAt).toISOString(),
+  };
+}
+
+/** GET /api/notifications — looks for new releases lazily (see notifications.ts for the rules). */
+export async function getNotifications(u: UserDoc): Promise<NotificationsResponse> {
+  let pending = notifInflight.get(u.uid);
+  if (!pending) {
+    pending = refreshNotifications(u).finally(() => notifInflight.delete(u.uid));
+    notifInflight.set(u.uid, pending);
+  }
+  await pending;
+  return notificationsOut(u);
+}
+
+export function markNotificationsRead(u: UserDoc, ids: string[] | "all"): NotificationsResponse {
+  u.markNotificationsRead(ids);
+  return notificationsOut(u);
+}
+
+/** Test hook. */
+export function clearReleaseCache() {
+  releaseCache.clear();
+  notifBackoff.clear();
+}
+
+export type { AppNotification };
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+const SEARCH_LIMITS: Record<SearchType, { tracks: number; albums: number; artists: number; playlists: number }> = {
+  all: { tracks: 10, albums: 8, artists: 8, playlists: 6 },
+  tracks: { tracks: 50, albums: 0, artists: 0, playlists: 0 },
+  albums: { tracks: 0, albums: 24, artists: 0, playlists: 0 },
+  artists: { tracks: 0, albums: 0, artists: 24, playlists: 0 },
+  playlists: { tracks: 0, albums: 0, artists: 0, playlists: 50 },
+};
+
+/** Artists the server knows (seed + Jamendo items seen before) whose name contains `q`. */
+function registryArtists(q: string, limit: number): Artist[] {
+  const found = new Map<string, Artist>();
+  const add = (id: string | undefined, name: string, source: Artist["source"], imageUrl?: string) => {
+    if (!id || found.has(id) || !matches(q, name)) return;
+    found.set(id, { id, name, source, ...(imageUrl ? { imageUrl } : {}) });
+  };
+  for (const a of albumIndex.values()) add(a.artistId, a.artist, a.source);
+  for (const t of trackIndex.values()) add(t.artistId, t.artist, t.source);
+  // Names starting with the query first.
+  const lq = q.toLowerCase();
+  return [...found.values()]
+    .sort((a, b) => Number(!a.name.toLowerCase().startsWith(lq)) - Number(!b.name.toLowerCase().startsWith(lq)) || a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+
+async function searchArtists(q: string, limit: number): Promise<Artist[]> {
+  return fromJamendo(
+    "Artist search",
+    async () => {
+      const raw = await jamendoGet<JamendoArtist>("artists", { namesearch: q, order: "popularity_total", limit });
+      return raw.map((a) => mapArtist(a, jamendoClientId()));
+    },
+    () => registryArtists(q, limit)
+  );
+}
+
+/** GET /api/search — one query across tracks, albums, artists and the caller's own playlists. */
+export async function search(q: string, type: SearchType, u: Viewer): Promise<SearchResults> {
+  const lim = SEARCH_LIMITS[type];
+  const base = { q, genre: null, liked: null, sort: null };
+  const [tracks, albums, artists] = await Promise.all([
+    lim.tracks ? listTracks({ ...base, limit: lim.tracks }, u) : Promise.resolve([]),
+    lim.albums ? listAlbums({ ...base, limit: lim.albums }, u) : Promise.resolve([]),
+    lim.artists ? searchArtists(q, lim.artists) : Promise.resolve([]),
+  ]);
+  const playlists = lim.playlists && u ? u.state.playlists.filter((p) => matches(q, p.name, p.description ?? "")).slice(0, lim.playlists).map(userPlaylistOut) : [];
+  return { q, type, tracks, albums, artists, playlists };
+}
+
+/** Remembers a search (newest first, case-insensitive dedupe). */
+export function addRecentSearch(u: UserDoc, q: string): string[] {
+  const clean = q.replace(/\s+/g, " ").trim();
+  if (!clean) return u.state.searches;
+  u.setSearches([clean, ...u.state.searches.filter((x) => x.toLowerCase() !== clean.toLowerCase())].slice(0, MAX_SEARCHES));
+  return u.state.searches;
+}
+
+export function clearRecentSearches(u: UserDoc, q?: string): string[] {
+  u.setSearches(q ? u.state.searches.filter((x) => x.toLowerCase() !== q.toLowerCase()) : []);
+  return u.state.searches;
 }

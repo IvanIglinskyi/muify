@@ -6,6 +6,8 @@ import { ArtistLink } from "../components/ArtistLink";
 import { Cover } from "../components/Cover";
 import { HeartButton } from "../components/common";
 import { TrackTable } from "../components/TrackTable";
+import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { formatLongDuration } from "../lib/format";
 import { openExternal } from "../lib/license";
 import { useLibrary } from "../store/LibraryContext";
@@ -24,6 +26,7 @@ function shuffled<T>(list: T[]): T[] {
 
 /** /album/:id — cover, meta, Play all / Shuffle, like, track list. */
 export function AlbumPage() {
+  const t = useT();
   const { id = "" } = useParams();
   const { query } = useShell();
   const { albums, tracks, mergeAlbums, toggleAlbumLike } = useLibrary();
@@ -34,7 +37,7 @@ export function AlbumPage() {
   const [reloadKey, setReloadKey] = useState(0);
 
   const album = albums[id];
-  useDocumentTitle(album ? `${album.title} · ${album.artist}` : "Album");
+  useDocumentTitle(album ? `${album.title} · ${album.artist}` : t("album.title"));
 
   // Always fetch: the index may know the album but not all of its tracks.
   useEffect(() => {
@@ -50,7 +53,7 @@ export function AlbumPage() {
         if (e.name === "AbortError") return;
         if (e instanceof ApiRequestError && e.status === 404) setStatus("notfound");
         else {
-          setError(e.message);
+          setError(errorText(e));
           setStatus("error");
         }
       });
@@ -59,7 +62,7 @@ export function AlbumPage() {
 
   const back = (
     <button type="button" className="back-link" onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}>
-      <ArrowLeft size={16} aria-hidden="true" /> Back
+      <ArrowLeft size={16} aria-hidden="true" /> {t("common.back")}
     </button>
   );
 
@@ -68,10 +71,10 @@ export function AlbumPage() {
       return (
         <div className="page">
           {back}
-          <EmptyState icon={<Disc3 size={28} />} title="Album not found">
-            <p>It may no longer be available.</p>
+          <EmptyState icon={<Disc3 size={28} />} title={t("album.notFound")}>
+            <p>{t("album.notFoundText")}</p>
             <Link to="/explore" className="pill-btn">
-              Explore albums
+              {t("common.exploreAlbums")}
             </Link>
           </EmptyState>
         </div>
@@ -82,9 +85,9 @@ export function AlbumPage() {
         <div className="page">
           {back}
           <div className="inline-error" role="alert">
-            <span>Could not load this album: {error}</span>
+            <span>{t("album.loadError", { error: error ?? "" })}</span>
             <button type="button" className="link-btn" onClick={() => setReloadKey((k) => k + 1)}>
-              Retry
+              {t("common.retry")}
             </button>
           </div>
         </div>
@@ -99,8 +102,8 @@ export function AlbumPage() {
   }
 
   const list = album.trackIds.map((tid) => tracks[tid]).filter(Boolean);
-  const visible = list.filter((t) => matchesQuery(query, t.title, t.artist));
-  const ids = list.map((t) => t.id);
+  const visible = list.filter((x) => matchesQuery(query, x.title, x.artist));
+  const ids = list.map((x) => x.id);
   const shareUrl = album.shareUrl;
 
   return (
@@ -113,7 +116,7 @@ export function AlbumPage() {
         </span>
         <div className="playlist-hero-text">
           <span className="eyebrow">
-            <Disc3 size={14} aria-hidden="true" /> Album
+            <Disc3 size={14} aria-hidden="true" /> {t("album.eyebrow")}
           </span>
           <h1 id="album-title" className="playlist-hero-title">
             {album.title}
@@ -123,9 +126,9 @@ export function AlbumPage() {
             {album.year ? ` - ${album.year}` : ""}
           </p>
           <p className="meta">
-            {album.trackCount} Tracks&nbsp;&nbsp;{formatLongDuration(album.duration)}
+            {t("common.tracksMeta", { count: album.trackCount })}&nbsp;&nbsp;{formatLongDuration(album.duration)}
             {list.length < album.trackCount && status === "ready" && (
-              <span className="muted"> · {list.length} available here</span>
+              <span className="muted"> · {t("album.availableHere", { count: list.length })}</span>
             )}
           </p>
           <div className="hero-actions">
@@ -138,17 +141,17 @@ export function AlbumPage() {
                 const order = shuffled(ids);
                 playTrack(order[0], order);
               }}
-              aria-label={`Shuffle ${album.title}`}
+              aria-label={t("album.shuffle", { title: album.title })}
             >
-              <Shuffle size={15} aria-hidden="true" /> Shuffle
+              <Shuffle size={15} aria-hidden="true" /> {t("common.shuffle")}
             </button>
-            <HeartButton liked={album.liked} label={`album ${album.title}`} size={22} onToggle={() => toggleAlbumLike(album.id)} />
+            <HeartButton liked={album.liked} label={t("heart.albumLabel", { title: album.title })} size={22} onToggle={() => toggleAlbumLike(album.id)} />
             {shareUrl && (
               <button
                 type="button"
                 className="icon-btn"
-                aria-label={`Open ${album.title} on Jamendo`}
-                title="Open on Jamendo"
+                aria-label={t("album.openJamendo", { title: album.title })}
+                title={t("common.openJamendo")}
                 onClick={() => openExternal(shareUrl)}
               >
                 <ExternalLink size={18} />
@@ -158,10 +161,10 @@ export function AlbumPage() {
         </div>
       </section>
 
-      <section className="card chart-panel" aria-label={`${album.title} tracks`} aria-busy={status === "loading"}>
+      <section className="card chart-panel" aria-label={t("album.tracksCaption", { title: album.title })} aria-busy={status === "loading"}>
         {status === "error" && (
           <p className="inline-error" role="alert">
-            Could not refresh this album: {error}
+            {t("album.refreshError", { error: error ?? "" })}
           </p>
         )}
         <div className="chart-scroll">
@@ -170,13 +173,13 @@ export function AlbumPage() {
             queue={ids}
             showRank
             hideAlbum
-            caption={`${album.title} tracks`}
+            caption={t("album.tracksCaption", { title: album.title })}
             empty={
               status === "loading"
                 ? undefined
                 : list.length === 0
-                  ? "No playable tracks in this album."
-                  : <>No tracks match “{query.trim()}”.</>
+                  ? t("album.noTracks")
+                  : t("common.noMatch", { q: query.trim() })
             }
           />
         </div>

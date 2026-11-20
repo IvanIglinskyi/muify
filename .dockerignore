@@ -1,0 +1,20 @@
+# Keep the build context small and secret-free.
+.git
+.github
+.claude
+design
+node_modules
+**/node_modules
+**/dist
+*.log
+**/*.log
+
+# Secrets and local state never go into the image.
+.env
+**/.env
+**/.env.*
+!**/.env.example
+*service-account*.json
+**/*service-account*.json
+server/data-store
+.firebase

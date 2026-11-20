@@ -49,6 +49,8 @@ export interface JamendoTrack {
   image: string;
   /** Present with include=musicinfo. */
   musicinfo?: JamendoMusicInfo;
+  /** Present with include=lyrics (may be empty or contain <br />). */
+  lyrics?: string;
 }
 
 /** Track entry nested in a GET /albums/tracks result. */

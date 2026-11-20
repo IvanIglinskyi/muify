@@ -1,5 +1,6 @@
 import { GripVertical } from "lucide-react";
-import { DragEvent, ReactNode, useRef, useState } from "react";
+import { KeyboardEvent, PointerEvent, ReactNode, useRef, useState } from "react";
+import { useT } from "../i18n";
 import { formatTime } from "../lib/format";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
@@ -31,73 +32,102 @@ interface TrackTableProps {
   extraColumn?: { header: string; render: (t: Track, index: number) => ReactNode };
   /** Hide the album column (e.g. on the album page). */
   hideAlbum?: boolean;
-  /** Drag-and-drop reordering + "Move up / down" menu entries (user playlists). */
+  /** Drag handle (mouse, touch, pen; arrow keys) + "Move up / down" menu entries (user playlists). */
   reorder?: TrackReorder;
 }
 
-/** Keyboard-accessible alternative to drag-and-drop (in the row's ⋮ menu). */
-function moveItems(index: number, count: number, onMove: TrackReorder["onMove"]): MenuItem[] {
-  return [
-    { label: "Move up", disabled: index === 0, onSelect: () => onMove(index, index - 1) },
-    { label: "Move down", disabled: index === count - 1, onSelect: () => onMove(index, index + 1) },
-    { label: "Move to top", disabled: index === 0, onSelect: () => onMove(index, 0) },
-    { label: "Move to bottom", disabled: index === count - 1, onSelect: () => onMove(index, count - 1) },
-  ];
-}
+/** Edge zone (px) where dragging near the top/bottom of the window scrolls it. */
+const AUTOSCROLL_ZONE = 64;
 
 /** Track list in the Daily Mix style: cover + title/artist, album, time, like, kebab. */
 export function TrackTable({ tracks, queue, showRank, empty, caption, playlistId, extraColumn, hideAlbum, reorder }: TrackTableProps) {
+  const t = useT();
   const { toggleTrackLike } = useLibrary();
   const { current, isPlaying, playTrack, togglePlay } = usePlayer();
   const menuFor = useTrackMenu();
+  const tableRef = useRef<HTMLTableElement>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
-  /** Source row of the drag in progress (a ref: drag events can outrun re-renders). */
-  const dragFromRef = useRef<number | null>(null);
-  const ids = queue ?? tracks.map((t) => t.id);
+  /** Drag in progress (a ref: pointer events can outrun re-renders). */
+  const dragRef = useRef<{ from: number; over: number | null; pointerId: number } | null>(null);
+  const ids = queue ?? tracks.map((x) => x.id);
   const columns = 4 + (showRank ? 1 : 0) + (hideAlbum ? 0 : 1) + (extraColumn ? 1 : 0) + (reorder ? 1 : 0);
 
+  /** Keyboard-accessible alternative to dragging (in the row's ⋮ menu). */
+  const moveItems = (index: number, count: number, onMove: TrackReorder["onMove"]): MenuItem[] => [
+    { label: t("table.moveUp"), disabled: index === 0, onSelect: () => onMove(index, index - 1) },
+    { label: t("table.moveDown"), disabled: index === count - 1, onSelect: () => onMove(index, index + 1) },
+    { label: t("table.moveTop"), disabled: index === 0, onSelect: () => onMove(index, 0) },
+    { label: t("table.moveBottom"), disabled: index === count - 1, onSelect: () => onMove(index, count - 1) },
+  ];
+
   const endDrag = () => {
-    dragFromRef.current = null;
+    dragRef.current = null;
     setDragFrom(null);
     setDragOver(null);
   };
 
-  const dragProps = (i: number) =>
-    reorder
-      ? {
-          draggable: true,
-          onDragStart: (e: DragEvent<HTMLTableRowElement>) => {
-            dragFromRef.current = i;
-            setDragFrom(i);
-            e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", tracks[i].id);
-          },
-          onDragOver: (e: DragEvent<HTMLTableRowElement>) => {
-            if (dragFromRef.current === null) return; // not one of our rows (e.g. a file)
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            setDragOver(i);
-          },
-          onDrop: (e: DragEvent<HTMLTableRowElement>) => {
-            const from = dragFromRef.current;
-            if (from === null) return;
-            e.preventDefault();
-            if (from !== i) reorder.onMove(from, i);
-            endDrag();
-          },
-          onDragEnd: endDrag,
-        }
-      : {};
+  /** Row index under a viewport point (only rows of this table count). */
+  const rowAt = (x: number, y: number): number | null => {
+    const el = document.elementFromPoint(x, y);
+    const row = el?.closest<HTMLTableRowElement>("tr[data-index]");
+    if (!row || !tableRef.current?.contains(row)) return null;
+    const i = Number(row.dataset.index);
+    return Number.isInteger(i) ? i : null;
+  };
+
+  const handleProps = (i: number, title: string) => ({
+    onPointerDown: (e: PointerEvent<HTMLButtonElement>) => {
+      if (!reorder || (e.pointerType === "mouse" && e.button !== 0)) return;
+      e.preventDefault(); // no text selection / no native drag
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      dragRef.current = { from: i, over: i, pointerId: e.pointerId };
+      setDragFrom(i);
+      setDragOver(i);
+    },
+    onPointerMove: (e: PointerEvent<HTMLButtonElement>) => {
+      const d = dragRef.current;
+      if (!d || d.pointerId !== e.pointerId) return;
+      const over = rowAt(e.clientX, e.clientY);
+      if (over !== null && over !== d.over) {
+        d.over = over;
+        setDragOver(over);
+      }
+      if (e.clientY < AUTOSCROLL_ZONE) window.scrollBy(0, -12);
+      else if (e.clientY > window.innerHeight - AUTOSCROLL_ZONE) window.scrollBy(0, 12);
+    },
+    onPointerUp: (e: PointerEvent<HTMLButtonElement>) => {
+      const d = dragRef.current;
+      if (!d || d.pointerId !== e.pointerId) return;
+      const over = rowAt(e.clientX, e.clientY) ?? d.over;
+      endDrag();
+      if (reorder && over !== null && over !== d.from) reorder.onMove(d.from, over);
+    },
+    onPointerCancel: endDrag,
+    onLostPointerCapture: () => dragRef.current && endDrag(),
+    onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => {
+      if (!reorder) return;
+      // Arrow keys on the focused handle move the row (the global ↑/↓ volume shortcut stays out of it).
+      const to = e.key === "ArrowUp" ? i - 1 : e.key === "ArrowDown" ? i + 1 : e.key === "Home" ? 0 : e.key === "End" ? tracks.length - 1 : null;
+      if (to === null) return;
+      e.preventDefault();
+      if (to < 0 || to >= tracks.length || to === i) return;
+      reorder.onMove(i, to);
+      const target = to;
+      window.requestAnimationFrame(() => tableRef.current?.querySelector<HTMLButtonElement>(`tr[data-index="${target}"] .drag-handle`)?.focus());
+    },
+    "aria-label": t("table.dragHandleLabel", { title }),
+    title: t("table.dragHandle"),
+  });
 
   return (
-    <table className={`mix-table${showRank ? " has-rank" : ""}${extraColumn ? " has-extra" : ""}${reorder ? " has-drag" : ""}`}>
+    <table ref={tableRef} className={`mix-table${showRank ? " has-rank" : ""}${extraColumn ? " has-extra" : ""}${reorder ? " has-drag" : ""}${dragFrom !== null ? " is-dragging-table" : ""}`}>
       {caption && <caption className="sr-only">{caption}</caption>}
       <thead>
         <tr>
           {reorder && (
             <th scope="col" className="col-drag">
-              <span className="sr-only">Reorder</span>
+              <span className="sr-only">{t("table.reorder")}</span>
             </th>
           )}
           {showRank && (
@@ -105,17 +135,17 @@ export function TrackTable({ tracks, queue, showRank, empty, caption, playlistId
               #
             </th>
           )}
-          <th scope="col" className="col-title">Title</th>
-          {!hideAlbum && <th scope="col" className="col-album">Album</th>}
+          <th scope="col" className="col-title">{t("table.title")}</th>
+          {!hideAlbum && <th scope="col" className="col-album">{t("table.album")}</th>}
           {extraColumn && <th scope="col" className="col-extra">{extraColumn.header}</th>}
-          <th scope="col" className="col-time">Time</th>
-          <th scope="col" className="col-like"><span className="sr-only">Like</span></th>
-          <th scope="col" className="col-more"><span className="sr-only">Options</span></th>
+          <th scope="col" className="col-time">{t("table.time")}</th>
+          <th scope="col" className="col-like"><span className="sr-only">{t("table.like")}</span></th>
+          <th scope="col" className="col-more"><span className="sr-only">{t("table.options")}</span></th>
         </tr>
       </thead>
       <tbody>
-        {tracks.map((t, i) => {
-          const isCurrent = current?.id === t.id;
+        {tracks.map((tr, i) => {
+          const isCurrent = current?.id === tr.id;
           const cls = [
             isCurrent ? "is-current" : null,
             dragFrom === i ? "is-dragging" : null,
@@ -123,14 +153,14 @@ export function TrackTable({ tracks, queue, showRank, empty, caption, playlistId
           ]
             .filter(Boolean)
             .join(" ");
-          const menu = menuFor(t, { queue: ids, playlistId });
+          const menu = menuFor(tr, { queue: ids, playlistId });
           return (
-            <tr key={t.id} className={cls || undefined} {...dragProps(i)}>
+            <tr key={tr.id} className={cls || undefined} data-index={i}>
               {reorder && (
                 <td className="col-drag">
-                  <span className="drag-handle" title="Drag to reorder (or use ⋮ → Move up / down)" aria-hidden="true">
-                    <GripVertical size={16} />
-                  </span>
+                  <button type="button" className="drag-handle" {...handleProps(i, tr.title)}>
+                    <GripVertical size={16} aria-hidden="true" />
+                  </button>
                 </td>
               )}
               {showRank && <td className="col-rank">{i + 1}</td>}
@@ -138,35 +168,38 @@ export function TrackTable({ tracks, queue, showRank, empty, caption, playlistId
                 {/* The play button stretches over the whole cell; the artist link sits above it. */}
                 <div className="mix-track">
                   <span className="thumb">
-                    <Cover seed={t.id} src={t.coverUrl} />
+                    <Cover seed={tr.id} src={tr.coverUrl} />
                     {isCurrent && isPlaying && <span className="eq" aria-hidden="true"><i /><i /><i /></span>}
                   </span>
                   <span className="track-text">
                     <button
                       type="button"
                       className="mix-track-play"
-                      onClick={() => (isCurrent ? togglePlay() : playTrack(t.id, ids))}
-                      aria-label={`${isCurrent && isPlaying ? "Pause" : "Play"} ${t.title} by ${t.artist}`}
+                      onClick={() => (isCurrent ? togglePlay() : playTrack(tr.id, ids))}
+                      aria-label={t(isCurrent && isPlaying ? "table.pauseTrack" : "table.playTrack", { title: tr.title, artist: tr.artist })}
                     >
-                      <span className="track-title">{t.title}</span>
+                      <span className="track-title">{tr.title}</span>
                     </button>
-                    <ArtistLink className="track-artist" name={t.artist} id={t.artistId} />
+                    <ArtistLink className="track-artist" name={tr.artist} id={tr.artistId} />
                   </span>
                 </div>
               </td>
               {!hideAlbum && (
-                <td className="col-album" title={t.album}>
-                  <span className="ellipsis">{t.album}</span>
+                <td className="col-album" title={tr.album}>
+                  <span className="ellipsis">{tr.album}</span>
                 </td>
               )}
-              {extraColumn && <td className="col-extra">{extraColumn.render(t, i)}</td>}
-              <td className="col-time">{formatTime(t.duration)}m</td>
+              {extraColumn && <td className="col-extra">{extraColumn.render(tr, i)}</td>}
+              <td className="col-time">
+                {formatTime(tr.duration)}
+                {t("table.timeSuffix")}
+              </td>
               <td>
-                <HeartButton liked={t.liked} label={t.title} onToggle={() => toggleTrackLike(t.id)} />
+                <HeartButton liked={tr.liked} label={tr.title} onToggle={() => toggleTrackLike(tr.id)} />
               </td>
               <td>
                 <KebabMenu
-                  label={`More options for ${t.title}`}
+                  label={t("table.moreOptions", { title: tr.title })}
                   items={reorder ? [...moveItems(i, tracks.length, reorder.onMove), ...menu] : menu}
                 />
               </td>

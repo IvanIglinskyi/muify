@@ -18,7 +18,7 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authMode, firebase, firebaseConfigInfo } from "./firebase.js";
-import type { Album, HistoryEntry, Track } from "./types.js";
+import type { Album, AppNotification, CatalogSource, HistoryEntry, Language, Track } from "./types.js";
 
 export interface StoredPlaylist {
   id: string;
@@ -50,8 +50,18 @@ export interface UserProfile {
   accentColor: string | null;
   /** Show the provider photo (Google) instead of initials when there is one. */
   usePhoto: boolean;
+  /** UI language, or null for the browser default. */
+  language: Language | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StoredFollow {
+  name: string;
+  imageUrl?: string;
+  source: CatalogSource;
+  /** Followed at (ms). */
+  at: number;
 }
 
 export interface UserState {
@@ -66,9 +76,20 @@ export interface UserState {
   trackMeta: Record<string, Track>;
   albumMeta: Record<string, Omit<Album, "liked">>;
   profile: UserProfile | null;
+  /** artistId → follow. Map order = follow order (oldest first). */
+  follows: Map<string, StoredFollow>;
+  /** id → notification (oldest first). */
+  notifications: Map<string, AppNotification>;
+  /** Last new-release lookup (ms), or null. */
+  notifCheckedAt: number | null;
+  /** Recent search queries, newest first. */
+  searches: string[];
 }
 
 export const MAX_HISTORY = 2000;
+export const MAX_FOLLOWS = 500;
+export const MAX_NOTIFICATIONS = 50;
+export const MAX_SEARCHES = 10;
 export const LOCAL_UID = "local";
 
 function emptyState(): UserState {
@@ -81,6 +102,10 @@ function emptyState(): UserState {
     trackMeta: {},
     albumMeta: {},
     profile: null,
+    follows: new Map(),
+    notifications: new Map(),
+    notifCheckedAt: null,
+    searches: [],
   };
 }
 
@@ -162,12 +187,49 @@ function parseProfile(p: unknown): UserProfile | null {
     photoURL: s(p.photoURL),
     accentColor: isStr(p.accentColor) && /^#[0-9a-fA-F]{6}$/.test(p.accentColor) ? p.accentColor : null,
     usePhoto: p.usePhoto !== false,
+    language: p.language === "uk" || p.language === "en" ? p.language : null,
     createdAt: s(p.createdAt) ?? nowIso(),
     updatedAt: s(p.updatedAt) ?? nowIso(),
   };
 }
 
-/** The v1 JSON file format (local mode) — unchanged from earlier versions. */
+function parseFollow(f: unknown): StoredFollow | null {
+  if (!isObj(f) || !isStr(f.name)) return null;
+  const out: StoredFollow = {
+    name: f.name,
+    source: f.source === "jamendo" ? "jamendo" : "seed",
+    at: finite(f.at, Date.now()),
+  };
+  if (isStr(f.imageUrl) && /^https:\/\//.test(f.imageUrl)) out.imageUrl = f.imageUrl;
+  return out;
+}
+
+const NOTIF_FIELDS = ["albumId", "albumTitle", "artistId", "artistName", "coverUrl", "releaseDate"] as const;
+
+function parseNotification(id: string, n: unknown): AppNotification | null {
+  if (!isObj(n) || (n.kind !== "release" && n.kind !== "welcome") || !isStr(n.createdAt)) return null;
+  const out: AppNotification = { id, kind: n.kind, createdAt: n.createdAt, read: n.read === true };
+  for (const k of NOTIF_FIELDS) {
+    const v = n[k];
+    if (isStr(v)) out[k] = v;
+  }
+  if (n.demo === true) out.demo = true;
+  return out;
+}
+
+function parseSearches(v: unknown): string[] {
+  return strList(v)
+    .map((q) => q.trim())
+    .filter((q) => q && q.length <= 100)
+    .slice(0, MAX_SEARCHES);
+}
+
+/** Notifications oldest → newest (Map order). */
+function notificationMap(list: AppNotification[]): Map<string, AppNotification> {
+  return new Map(list.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((n) => [n.id, n]));
+}
+
+/** The v1 JSON file format (local mode). Fields after `albumMeta` were added later (all optional). */
 interface FileStateV1 {
   version: 1;
   likedTrackIds: string[];
@@ -177,6 +239,11 @@ interface FileStateV1 {
   playback: StoredPlayback | null;
   trackMeta: Record<string, Track>;
   albumMeta: Record<string, Omit<Album, "liked">>;
+  profile?: UserProfile | null;
+  follows?: Record<string, StoredFollow>;
+  notifications?: AppNotification[];
+  notifCheckedAt?: number | null;
+  searches?: string[];
 }
 
 function fromFile(raw: unknown): UserState {
@@ -211,6 +278,22 @@ function fromFile(raw: unknown): UserState {
       if (parsed) s.albumMeta[id] = parsed;
     }
   }
+  s.profile = parseProfile(raw.profile);
+  if (isObj(raw.follows)) {
+    for (const [id, f] of Object.entries(raw.follows)) {
+      const parsed = parseFollow(f);
+      if (parsed) s.follows.set(id, parsed);
+    }
+  }
+  if (Array.isArray(raw.notifications)) {
+    s.notifications = notificationMap(
+      raw.notifications
+        .map((n) => (isObj(n) && isStr(n.id) ? parseNotification(n.id, n) : null))
+        .filter((n): n is AppNotification => Boolean(n))
+    );
+  }
+  s.notifCheckedAt = typeof raw.notifCheckedAt === "number" ? raw.notifCheckedAt : null;
+  s.searches = parseSearches(raw.searches);
   return s;
 }
 
@@ -224,6 +307,11 @@ function toFile(s: UserState): FileStateV1 {
     playback: s.playback,
     trackMeta: s.trackMeta,
     albumMeta: s.albumMeta,
+    profile: s.profile,
+    follows: Object.fromEntries(s.follows),
+    notifications: [...s.notifications.values()],
+    notifCheckedAt: s.notifCheckedAt,
+    searches: s.searches,
   };
 }
 
@@ -274,6 +362,25 @@ function fromRtdb(raw: unknown): UserState {
     }
   }
   s.profile = parseProfile(raw.profile);
+  if (isObj(raw.follows)) {
+    const list = Object.entries(raw.follows)
+      .map(([k, f]) => [decodeKey(k), parseFollow(f)] as const)
+      .filter((e): e is readonly [string, StoredFollow] => Boolean(e[1]))
+      .sort((a, b) => a[1].at - b[1].at);
+    for (const [id, f] of list) s.follows.set(id, f);
+  }
+  if (isObj(raw.notifications)) {
+    const n = raw.notifications;
+    if (isObj(n.items)) {
+      s.notifications = notificationMap(
+        Object.entries(n.items)
+          .map(([k, v]) => parseNotification(decodeKey(k), v))
+          .filter((x): x is AppNotification => Boolean(x))
+      );
+    }
+    s.notifCheckedAt = typeof n.checkedAt === "number" ? n.checkedAt : null;
+  }
+  s.searches = parseSearches(raw.searches);
   return s;
 }
 
@@ -473,6 +580,54 @@ export class UserDoc {
     }
   }
 
+  // ---- follows ----
+  setFollow(artistId: string, follow: StoredFollow | null) {
+    if (follow) {
+      this.state.follows.delete(artistId); // re-insert at the end (follow order)
+      this.state.follows.set(artistId, follow);
+    } else if (!this.state.follows.delete(artistId)) return;
+    this.put(`follows/${encodeKey(artistId)}`, follow ? clean(follow) : null);
+  }
+
+  // ---- notifications ----
+  /** Adds (or replaces) notifications; keeps the newest MAX_NOTIFICATIONS. */
+  addNotifications(list: AppNotification[]) {
+    if (!list.length) return;
+    const all = notificationMap([...this.state.notifications.values(), ...list.map((n) => ({ ...n }))]);
+    for (const n of list) this.put(`notifications/items/${encodeKey(n.id)}`, clean({ ...all.get(n.id)!, id: undefined }));
+    const excess = all.size - MAX_NOTIFICATIONS;
+    if (excess > 0) {
+      for (const id of [...all.keys()].slice(0, excess)) {
+        all.delete(id);
+        this.put(`notifications/items/${encodeKey(id)}`, null);
+      }
+    }
+    this.state.notifications = all;
+  }
+
+  /** Marks the given (or all) notifications read; returns how many changed. */
+  markNotificationsRead(ids: string[] | "all"): number {
+    let n = 0;
+    for (const item of this.state.notifications.values()) {
+      if (item.read || (ids !== "all" && !ids.includes(item.id))) continue;
+      item.read = true;
+      n++;
+      this.put(`notifications/items/${encodeKey(item.id)}/read`, true);
+    }
+    return n;
+  }
+
+  setNotifCheckedAt(at: number) {
+    this.state.notifCheckedAt = at;
+    this.put("notifications/checkedAt", at);
+  }
+
+  // ---- recent searches ----
+  setSearches(list: string[]) {
+    this.state.searches = list.slice(0, MAX_SEARCHES);
+    this.put("searches", this.state.searches.length ? [...this.state.searches] : null);
+  }
+
   // ---- profile ----
   updateProfile(changes: Partial<Omit<UserProfile, "createdAt" | "updatedAt">>) {
     const now = nowIso();
@@ -482,6 +637,7 @@ export class UserDoc {
       photoURL: null,
       accentColor: null,
       usePhoto: true,
+      language: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -507,6 +663,15 @@ export class UserDoc {
       playback: s.playback,
       trackSnapshots: s.trackMeta,
       albumSnapshots: s.albumMeta,
+      followedArtists: [...s.follows].map(([id, f]) => ({
+        id,
+        name: f.name,
+        source: f.source,
+        imageUrl: f.imageUrl ?? null,
+        followedAt: new Date(f.at).toISOString(),
+      })),
+      notifications: [...s.notifications.values()],
+      recentSearches: s.searches,
     };
   }
 }
@@ -700,6 +865,10 @@ class FileUserStore implements UserStore, Backend {
     doc.state.playlists = [];
     doc.state.history = [];
     doc.state.playback = null;
+    doc.state.follows.clear();
+    doc.state.notifications.clear();
+    doc.state.notifCheckedAt = null;
+    doc.state.searches = [];
     this.schedule();
   }
 }

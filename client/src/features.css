@@ -416,9 +416,6 @@ kbd {
 }
 
 @media (max-width: 767px) {
-  .mix-table .col-drag {
-    display: none;
-  }
   .stats-guest {
     flex-wrap: wrap;
   }

@@ -1,4 +1,5 @@
 import { createContext, FormEvent, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useT } from "../i18n";
 
 interface PromptOptions {
   title: string;
@@ -61,6 +62,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
 }
 
 function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
   const opener = useRef<Element | null>(document.activeElement);
   const [text, setText] = useState(pending.kind === "prompt" ? pending.options.initial ?? "" : "");
@@ -147,7 +149,7 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
         )}
         <div className="modal-actions">
           <button type="button" className="ghost-btn" onClick={() => finish(false)}>
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="submit"
@@ -155,7 +157,7 @@ function Modal({ pending, onDone }: { pending: Pending; onDone: () => void }) {
             disabled={pending.kind === "prompt" && !text.trim() && !pending.options.allowEmpty}
             autoFocus={pending.kind === "confirm"}
           >
-            {o.confirmLabel ?? "OK"}
+            {o.confirmLabel ?? t("common.ok")}
           </button>
         </div>
       </form>

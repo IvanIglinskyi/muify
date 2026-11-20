@@ -5,6 +5,7 @@ import { useOutletContext } from "react-router-dom";
 export interface ShellContext {
   /** Raw text of the header "Navigate" search box. */
   query: string;
+  setQuery: (q: string) => void;
   showPromo: boolean;
   closePromo: () => void;
 }
@@ -22,6 +23,7 @@ export function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
+/** Sets document.title (pass the already translated page title; "" = just "Muify"). */
 export function useDocumentTitle(title: string) {
   useEffect(() => {
     document.title = title ? `${title} · Muify` : "Muify";

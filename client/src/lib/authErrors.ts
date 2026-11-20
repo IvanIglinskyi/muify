@@ -1,36 +1,38 @@
-/** Firebase Auth error codes → text a listener can act on. */
-const MESSAGES: Record<string, string> = {
-  "auth/invalid-credential": "The email or password is incorrect.",
-  "auth/invalid-login-credentials": "The email or password is incorrect.",
-  "auth/wrong-password": "The password is incorrect.",
-  "auth/user-not-found": "There is no account with this email.",
-  "auth/invalid-email": "Please enter a valid email address.",
-  "auth/missing-email": "Please enter your email address.",
-  "auth/missing-password": "Please enter your password.",
-  "auth/email-already-in-use": "An account with this email already exists. Try signing in instead.",
-  "auth/weak-password": "This password is too weak. Use at least 8 characters with letters and numbers.",
-  "auth/password-does-not-meet-requirements": "This password doesn't meet the password requirements.",
-  "auth/too-many-requests": "Too many attempts. Please wait a few minutes and try again.",
-  "auth/network-request-failed": "Network error. Check your connection and try again.",
-  "auth/user-disabled": "This account has been disabled.",
-  "auth/operation-not-allowed": "This sign-in method is not enabled for MuiFy.",
-  "auth/unauthorized-domain": "Sign-in is not allowed from this address (add the domain to Firebase authorized domains).",
-  "auth/popup-blocked": "The sign-in popup was blocked by the browser.",
-  "auth/popup-closed-by-user": "The sign-in window was closed before finishing.",
-  "auth/cancelled-popup-request": "The sign-in window was closed before finishing.",
-  "auth/account-exists-with-different-credential":
-    "An account with this email already exists. Sign in with your password, then link Google in Account settings.",
-  "auth/credential-already-in-use": "This Google account is already linked to another MuiFy account.",
-  "auth/provider-already-linked": "This sign-in method is already linked to your account.",
-  "auth/no-such-provider": "This sign-in method is not linked to your account.",
-  "auth/requires-recent-login": "For your security, please confirm your identity and try again.",
-  "auth/user-mismatch": "Please confirm with the same account you are signed in with.",
-  "auth/user-token-expired": "Your session has expired. Please sign in again.",
-  "auth/invalid-action-code": "This link is invalid or has already been used.",
-  "auth/expired-action-code": "This link has expired. Please request a new one.",
-  "auth/invalid-api-key": "Sign-in is misconfigured (invalid API key).",
-  "auth/configuration-not-found": "Sign-in is not configured for this Firebase project.",
-  "auth/internal-error": "Something went wrong. Please try again.",
+import { tt, type MessageKey } from "../i18n/core";
+
+/** Firebase Auth error codes → message keys (text a listener can act on, in their language). */
+const MESSAGES: Record<string, MessageKey> = {
+  "auth/invalid-credential": "authErr.invalidCredential",
+  "auth/invalid-login-credentials": "authErr.invalidCredential",
+  "auth/wrong-password": "authErr.wrongPassword",
+  "auth/user-not-found": "authErr.userNotFound",
+  "auth/invalid-email": "authErr.invalidEmail",
+  "auth/missing-email": "authErr.missingEmail",
+  "auth/missing-password": "authErr.missingPassword",
+  "auth/email-already-in-use": "authErr.emailInUse",
+  "auth/weak-password": "authErr.weakPassword",
+  "auth/password-does-not-meet-requirements": "authErr.passwordRequirements",
+  "auth/too-many-requests": "authErr.tooManyRequests",
+  "auth/network-request-failed": "authErr.network",
+  "auth/user-disabled": "authErr.userDisabled",
+  "auth/operation-not-allowed": "authErr.operationNotAllowed",
+  "auth/unauthorized-domain": "authErr.unauthorizedDomain",
+  "auth/popup-blocked": "authErr.popupBlocked",
+  "auth/popup-closed-by-user": "authErr.popupClosed",
+  "auth/cancelled-popup-request": "authErr.popupClosed",
+  "auth/account-exists-with-different-credential": "authErr.accountExists",
+  "auth/credential-already-in-use": "authErr.credentialInUse",
+  "auth/provider-already-linked": "authErr.providerLinked",
+  "auth/no-such-provider": "authErr.noSuchProvider",
+  "auth/requires-recent-login": "authErr.recentLogin",
+  "auth/user-mismatch": "authErr.userMismatch",
+  "auth/user-token-expired": "authErr.tokenExpired",
+  "auth/invalid-action-code": "authErr.invalidActionCode",
+  "auth/expired-action-code": "authErr.expiredActionCode",
+  "auth/invalid-api-key": "authErr.invalidApiKey",
+  "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "authErr.invalidApiKey",
+  "auth/configuration-not-found": "authErr.configNotFound",
+  "auth/internal-error": "authErr.internal",
 };
 
 export function authErrorCode(e: unknown): string {
@@ -39,9 +41,9 @@ export function authErrorCode(e: unknown): string {
 
 export function authErrorMessage(e: unknown): string {
   const code = authErrorCode(e);
-  if (MESSAGES[code]) return MESSAGES[code];
+  if (MESSAGES[code]) return tt(MESSAGES[code]);
   if (e instanceof Error && e.message && !code) return e.message;
-  return "Something went wrong. Please try again.";
+  return tt("authErr.internal");
 }
 
 /** The listener closed the popup themselves: not worth an error message. */
@@ -54,9 +56,11 @@ export interface PasswordStrength {
   hint: string;
 }
 
+const LABELS: MessageKey[] = ["pw.tooShort", "pw.weak", "pw.fair", "pw.good", "pw.strong"];
+
 /** Simple strength hint (Firebase itself enforces min 6 chars, or the project's password policy). */
 export function passwordStrength(pw: string): PasswordStrength {
-  if (!pw) return { score: 0, label: "", hint: "Use at least 8 characters." };
+  if (!pw) return { score: 0, label: "", hint: tt("pw.hintLength") };
   let score = 0;
   if (pw.length >= 8) score++;
   if (pw.length >= 12) score++;
@@ -65,12 +69,6 @@ export function passwordStrength(pw: string): PasswordStrength {
   if (/[^A-Za-z0-9]/.test(pw)) score++;
   if (pw.length < 8) score = Math.min(score, 1);
   const s = Math.min(4, score) as PasswordStrength["score"];
-  const labels = ["Too short", "Weak", "Fair", "Good", "Strong"];
-  const hint =
-    pw.length < 8
-      ? "Use at least 8 characters."
-      : s < 3
-        ? "Add upper-case letters, numbers or symbols to make it stronger."
-        : "Nice — that's a solid password.";
-  return { score: s, label: labels[s], hint };
+  const hint = pw.length < 8 ? tt("pw.hintLength") : s < 3 ? tt("pw.hintStronger") : tt("pw.hintGood");
+  return { score: s, label: tt(LABELS[s]), hint };
 }

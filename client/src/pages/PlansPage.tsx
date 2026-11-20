@@ -1,46 +1,49 @@
 import { ArrowLeft, Check, Crown, Info } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useI18n, useT, type MessageKey } from "../i18n";
 import { useLibrary } from "../store/LibraryContext";
 import { useDocumentTitle } from "./shell";
 
-const PLANS = [
+const PLANS: { id: string; name: MessageKey; price: number; period: MessageKey; features: MessageKey[]; current: boolean }[] = [
   {
     id: "free",
-    name: "Free",
-    price: "€0",
-    period: "forever",
-    features: ["Stream the whole catalogue", "Likes, playlists and history", "Standard sound quality"],
+    name: "plans.free",
+    price: 0,
+    period: "plans.forever",
+    features: ["plans.f.catalogue", "plans.f.library", "plans.f.standard"],
     current: true,
   },
   {
     id: "premium",
-    name: "Premium",
-    price: "€9.99",
-    period: "per month",
-    features: ["Everything in Free", "No interruptions", "High-quality sound", "Offline listening", "Unlimited skips"],
+    name: "plans.premium",
+    price: 9.99,
+    period: "plans.perMonth",
+    features: ["plans.f.everything", "plans.f.noInterruptions", "plans.f.hq", "plans.f.offline", "plans.f.skips"],
     current: false,
   },
 ];
 
 /** /plans — "View Plan" from the promo card. Purely illustrative: nothing can be bought. */
 export function PlansPage() {
-  useDocumentTitle("Plans");
+  const t = useT();
+  const { locale } = useI18n();
+  useDocumentTitle(t("plans.title"));
   const { notifyInfo } = useLibrary();
+  const money = (n: number) => new Intl.NumberFormat(locale, { style: "currency", currency: "EUR", minimumFractionDigits: n % 1 ? 2 : 0 }).format(n);
 
   return (
     <div className="page plans-page">
       <Link to="/" className="back-link">
-        <ArrowLeft size={16} aria-hidden="true" /> Home
+        <ArrowLeft size={16} aria-hidden="true" /> {t("common.home")}
       </Link>
       <div className="page-head">
-        <h1 className="page-title">Make Every Beat Count</h1>
-        <p className="page-sub">Choose the plan that fits your listening.</p>
+        <h1 className="page-title">{t("plans.title")}</h1>
+        <p className="page-sub">{t("plans.sub")}</p>
       </div>
       <p className="demo-banner" role="note">
         <Info size={16} aria-hidden="true" />
         <span>
-          <strong>Demo only.</strong> Muify is a demo app — there are no real subscriptions and no payment is
-          taken.
+          <strong>{t("plans.demoStrong")}</strong> {t("plans.demoText")}
         </span>
       </p>
       <ul className="plan-grid">
@@ -48,39 +51,39 @@ export function PlansPage() {
           <li key={p.id} className={`card plan-card${p.id === "premium" ? " is-premium" : ""}`}>
             <div className="plan-head">
               <h2 className="plan-name">
-                {p.id === "premium" && <Crown size={18} aria-hidden="true" />} {p.name}
+                {p.id === "premium" && <Crown size={18} aria-hidden="true" />} {t(p.name)}
               </h2>
-              {p.current && <span className="badge">Current plan</span>}
+              {p.current && <span className="badge">{t("plans.current")}</span>}
             </div>
             <p className="plan-price">
-              <strong>{p.price}</strong> <span>{p.period}</span>
+              <strong>{money(p.price)}</strong> <span>{t(p.period)}</span>
             </p>
             <ul className="plan-features">
               {p.features.map((f) => (
                 <li key={f}>
-                  <Check size={15} aria-hidden="true" /> {f}
+                  <Check size={15} aria-hidden="true" /> {t(f)}
                 </li>
               ))}
             </ul>
             {p.current ? (
               <button type="button" className="ghost-btn" disabled>
-                Your current plan
+                {t("plans.yourCurrent")}
               </button>
             ) : (
               <button
                 type="button"
                 className="pill-btn"
-                onClick={() => notifyInfo("Demo only — no purchase was made.")}
+                onClick={() => notifyInfo(t("plans.demoToast"))}
                 aria-describedby="demo-note"
               >
-                Get Premium (demo)
+                {t("plans.getPremium")}
               </button>
             )}
           </li>
         ))}
       </ul>
       <p id="demo-note" className="sr-only">
-        Demo: this button does not purchase anything.
+        {t("plans.demoNote")}
       </p>
     </div>
   );

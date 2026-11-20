@@ -98,19 +98,37 @@ describe("TrackTable", () => {
     expect(up.disabled).toBe(true);
   });
 
-  it("reorders by drag and drop", () => {
+  it("reorders by dragging the handle (pointer events: mouse, touch, pen)", () => {
     const onMove = vi.fn();
     renderTable({ reorder: { onMove } });
     const rows = screen.getAllByRole("row").slice(1);
-    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" };
-    fireEvent.dragStart(rows[2], { dataTransfer });
-    fireEvent.dragOver(rows[0], { dataTransfer });
-    fireEvent.drop(rows[0], { dataTransfer });
+    const handle = screen.getByRole("button", { name: "Reorder Third: drag, or use the arrow keys" });
+    // jsdom has no layout: point the "element under the finger" at the first row.
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => rows[0].querySelector("td");
+    fireEvent.pointerDown(handle, { pointerId: 7, pointerType: "touch", clientX: 5, clientY: 5 });
+    expect(rows[2].className).toContain("is-dragging");
+    fireEvent.pointerMove(handle, { pointerId: 7, pointerType: "touch", clientX: 5, clientY: 5 });
+    expect(rows[0].className).toContain("drop-above");
+    fireEvent.pointerUp(handle, { pointerId: 7, pointerType: "touch", clientX: 5, clientY: 5 });
     expect(onMove).toHaveBeenCalledWith(2, 0);
-    // A drop that didn't start in this table (e.g. a file) is ignored.
+    // A cancelled gesture (e.g. the browser took over for scrolling) moves nothing.
     onMove.mockClear();
-    fireEvent.drop(rows[1], { dataTransfer });
+    fireEvent.pointerDown(handle, { pointerId: 8, pointerType: "touch" });
+    fireEvent.pointerCancel(handle, { pointerId: 8, pointerType: "touch" });
+    fireEvent.pointerUp(handle, { pointerId: 8, pointerType: "touch" });
     expect(onMove).not.toHaveBeenCalled();
+    document.elementFromPoint = original;
+  });
+
+  it("moves a row with the arrow keys on its handle", () => {
+    const onMove = vi.fn();
+    renderTable({ reorder: { onMove } });
+    const handle = screen.getByRole("button", { name: "Reorder Second: drag, or use the arrow keys" });
+    fireEvent.keyDown(handle, { key: "ArrowUp" });
+    expect(onMove).toHaveBeenCalledWith(1, 0);
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(onMove).toHaveBeenCalledWith(1, 2);
   });
 
   it("shows the empty message", () => {

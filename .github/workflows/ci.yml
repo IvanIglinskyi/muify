@@ -52,3 +52,57 @@ jobs:
 
       - name: Tests
         run: npm test
+
+      # The production bundle runs as one app (`npm start`): API + built client on one port.
+      # Local mode + demo catalogue (no secrets).
+      - name: Production smoke test (npm start)
+        env:
+          PORT: "4123"
+          MUIFY_DATA_DIR: ${{ runner.temp }}/muify-data
+        run: |
+          npm start > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:4123/api/status && break; sleep 1; done
+          set -e
+          curl -fsS http://localhost:4123/api/status | tee status.json; echo
+          grep -q '"mode":"local"' status.json
+          grep -q '"source":"seed"' status.json
+          curl -fsS http://localhost:4123/ | grep -q '<div id="root">'
+          curl -fsS http://localhost:4123/explore | grep -q '<div id="root">'       # SPA fallback
+          curl -fsSI http://localhost:4123/ | grep -qi '^content-security-policy:'
+          curl -fsS http://localhost:4123/sw.js | grep -q 'muify-shell-'
+          curl -fsS -o /dev/null http://localhost:4123/manifest.webmanifest
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4123/api/nope)" = 404
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4123/assets/missing-123.js)" = 404
+          curl -fsS "http://localhost:4123/api/search?q=rain" | grep -q '"albums"'
+          echo "smoke test passed"
+
+      - name: Stop server
+        if: always()
+        run: |
+          pkill -f "scripts/start.mjs" || true
+          cat server.log || true
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (no secrets, no Firebase web config)
+        run: docker build -t muify:ci .
+
+      - name: Run container and smoke test
+        run: |
+          docker run -d --name muify -p 8080:8080 muify:ci
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:8080/api/status && break; sleep 1; done
+          set -e
+          curl -fsS http://localhost:8080/api/status; echo
+          curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
+          test "$(docker exec muify id -u)" != "0"   # runs as the non-root "node" user
+          docker exec muify sh -c 'test ! -e /app/server/.env && ! ls /app/server/*service-account*.json 2>/dev/null'
+          echo "container smoke test passed"
+
+      - name: Logs
+        if: always()
+        run: docker logs muify || true

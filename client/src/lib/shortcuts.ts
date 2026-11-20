@@ -1,5 +1,6 @@
 // Global keyboard shortcuts: which key does what, and when to stay out of the way.
 // Kept free of React so it can be unit-tested.
+import type { MessageKey } from "../i18n/core";
 
 export type ShortcutAction =
   | "toggle-play"
@@ -15,23 +16,24 @@ export type ShortcutAction =
   | "help";
 
 export interface ShortcutHelp {
-  keys: string[];
-  label: string;
+  /** Key caps; message keys (e.g. the Space bar) are translated. */
+  keys: (string | MessageKey)[];
+  label: MessageKey;
 }
 
 /** For the "?" help dialog. */
 export const SHORTCUTS: ShortcutHelp[] = [
-  { keys: ["Space"], label: "Play / pause" },
-  { keys: ["Shift", "→"], label: "Next track" },
-  { keys: ["Shift", "←"], label: "Previous track" },
-  { keys: ["→"], label: "Seek forward 5 seconds" },
-  { keys: ["←"], label: "Seek back 5 seconds" },
-  { keys: ["↑"], label: "Volume up" },
-  { keys: ["↓"], label: "Volume down" },
-  { keys: ["M"], label: "Mute / unmute" },
-  { keys: ["L"], label: "Like / unlike the current track" },
-  { keys: ["/"], label: "Focus search" },
-  { keys: ["?"], label: "Show this help" },
+  { keys: ["shortcuts.key.space"], label: "shortcuts.playPause" },
+  { keys: ["Shift", "→"], label: "shortcuts.next" },
+  { keys: ["Shift", "←"], label: "shortcuts.prev" },
+  { keys: ["→"], label: "shortcuts.forward" },
+  { keys: ["←"], label: "shortcuts.back" },
+  { keys: ["↑"], label: "shortcuts.volUp" },
+  { keys: ["↓"], label: "shortcuts.volDown" },
+  { keys: ["M"], label: "shortcuts.mute" },
+  { keys: ["L"], label: "shortcuts.like" },
+  { keys: ["/"], label: "shortcuts.search" },
+  { keys: ["?"], label: "shortcuts.help" },
 ];
 
 /** Input types you don't type text into. */

@@ -1,20 +1,19 @@
 import { X } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useT } from "../i18n";
 
 export function Promo({ onClose }: { onClose: () => void }) {
+  const t = useT();
   return (
     <section className="card promo" aria-labelledby="promo-title">
-      <button type="button" className="promo-close" aria-label="Close promo" onClick={onClose}>
+      <button type="button" className="promo-close" aria-label={t("promo.close")} onClick={onClose}>
         <X size={14} strokeWidth={3} />
       </button>
       <div className="promo-text">
-        <h2 id="promo-title">Make Every Beat Count</h2>
-        <p>
-          With our premium subscription, enjoy your favorite tracks like never before. More control, better
-          sound, pure music.
-        </p>
+        <h2 id="promo-title">{t("promo.title")}</h2>
+        <p>{t("promo.text")}</p>
         <Link to="/plans" className="pill-btn">
-          View Plan
+          {t("promo.cta")}
         </Link>
       </div>
       <PromoShape />

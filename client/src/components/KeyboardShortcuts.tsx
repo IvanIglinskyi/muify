@@ -1,5 +1,6 @@
 import { Keyboard, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { tt, useT, type MessageKey } from "../i18n";
 import { formatTime } from "../lib/format";
 import { SEEK_STEP_S, SHORTCUTS, shortcutFor, VOLUME_STEP, type ShortcutAction } from "../lib/shortcuts";
 import { useLibrary } from "../store/LibraryContext";
@@ -49,7 +50,7 @@ export function KeyboardShortcuts() {
         case "toggle-play":
           if (!p.current) return false;
           p.togglePlay();
-          flash(p.isPlaying ? "Paused" : "Playing");
+          flash(tt(p.isPlaying ? "osd.paused" : "osd.playing"));
           return true;
         case "next":
           if (!p.current) return false;
@@ -71,18 +72,18 @@ export function KeyboardShortcuts() {
         case "volume-down": {
           const next = Math.min(1, Math.max(0, Math.round((vol + (action === "volume-up" ? VOLUME_STEP : -VOLUME_STEP)) * 100) / 100));
           p.setVolume(next);
-          flash(`Volume ${Math.round(next * 100)}%`);
+          flash(tt("osd.volume", { percent: Math.round(next * 100) }));
           return true;
         }
         case "mute":
           p.toggleMute();
-          flash(p.muted ? `Volume ${Math.round(p.volume * 100)}%` : "Muted");
+          flash(p.muted ? tt("osd.volume", { percent: Math.round(p.volume * 100) }) : tt("osd.muted"));
           return true;
         case "like": {
           if (!p.current) return false;
           const wasLiked = index[p.current.id]?.liked ?? p.current.liked;
           like(p.current.id);
-          flash(wasLiked ? "Removed from favourites" : "Added to favourites");
+          flash(tt(wasLiked ? "osd.unliked" : "osd.liked"));
           return true;
         }
         case "search":
@@ -118,7 +119,10 @@ export function KeyboardShortcuts() {
   );
 }
 
+const isKey = (k: string): k is MessageKey => k.startsWith("shortcuts.");
+
 function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
   const opener = useRef<Element | null>(document.activeElement);
 
@@ -147,14 +151,14 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
       <div className="modal-body">
         <div className="shortcuts-head">
           <h2 id="shortcuts-title" className="modal-title">
-            <Keyboard size={18} aria-hidden="true" /> Keyboard shortcuts
+            <Keyboard size={18} aria-hidden="true" /> {t("shortcuts.title")}
           </h2>
-          <button type="button" className="icon-btn" aria-label="Close keyboard shortcuts" onClick={onClose} autoFocus>
+          <button type="button" className="icon-btn" aria-label={t("shortcuts.close")} onClick={onClose} autoFocus>
             <X size={18} />
           </button>
         </div>
         <table className="shortcuts-table">
-          <caption className="sr-only">Keyboard shortcuts (they don’t apply while typing in a text field)</caption>
+          <caption className="sr-only">{t("shortcuts.caption")}</caption>
           <tbody>
             {SHORTCUTS.map((s) => (
               <tr key={s.label}>
@@ -162,16 +166,16 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                   {s.keys.map((k, i) => (
                     <span key={k}>
                       {i > 0 && <span aria-hidden="true"> + </span>}
-                      <kbd>{k}</kbd>
+                      <kbd>{isKey(k) ? t(k) : k}</kbd>
                     </span>
                   ))}
                 </th>
-                <td>{s.label}</td>
+                <td>{t(s.label)}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        <p className="shortcuts-note">Shortcuts are off while you type in a text field.</p>
+        <p className="shortcuts-note">{t("shortcuts.note")}</p>
       </div>
     </dialog>
   );

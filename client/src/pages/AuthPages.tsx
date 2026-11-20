@@ -2,6 +2,7 @@ import { Eye, EyeOff, Loader2, Lock, Mail, User as UserIcon } from "lucide-react
 import { FormEvent, ReactNode, useEffect, useId, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Logo } from "../components/common";
+import { Trans, useT } from "../i18n";
 import { authErrorMessage, isPopupDismissal, passwordStrength } from "../lib/authErrors";
 import { consumeRedirectNext, safeNext, useAuth } from "../store/AuthContext";
 import { useDocumentTitle } from "./shell";
@@ -57,6 +58,7 @@ function Field({
   invalid?: boolean;
   autoFocus?: boolean;
 }) {
+  const t = useT();
   const id = useId();
   const [show, setShow] = useState(false);
   const isPassword = type === "password";
@@ -82,7 +84,7 @@ function Field({
           <button
             type="button"
             className="icon-btn auth-eye"
-            aria-label={show ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+            aria-label={t(show ? "auth.hideField" : "auth.showField", { field: label })}
             aria-pressed={show}
             onClick={() => setShow((s) => !s)}
           >
@@ -103,6 +105,7 @@ function FormError({ message }: { message: string | null }) {
 }
 
 function GoogleButton({ next, onError, disabled }: { next: string; onError: (m: string | null) => void; disabled?: boolean }) {
+  const t = useT();
   const { signInWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   return (
@@ -123,32 +126,26 @@ function GoogleButton({ next, onError, disabled }: { next: string; onError: (m: 
       }}
     >
       {busy ? <Loader2 size={18} className="spin" aria-hidden="true" /> : <GoogleMark />}
-      Continue with Google
+      {t("auth.google")}
     </button>
   );
 }
 
 /** Shown instead of the forms when accounts are off or misconfigured. */
 function AccountsUnavailable() {
+  const t = useT();
   const { phase, clientMisconfigured } = useAuth();
   if (phase === "loading") {
     return (
-      <AuthCard title="One moment…">
-        <p className="auth-sub">Checking your session…</p>
+      <AuthCard title={t("auth.oneMoment")}>
+        <p className="auth-sub">{t("common.checkingSession")}</p>
       </AuthCard>
     );
   }
   return (
-    <AuthCard
-      title="Accounts are off"
-      subtitle={
-        clientMisconfigured
-          ? "This app build has no Firebase web config (client/.env.local), so sign-in isn't available."
-          : "This MuiFy server runs in local mode: no sign-in needed — your likes, playlists and history are saved on this computer."
-      }
-    >
+    <AuthCard title={t("auth.accountsOff")} subtitle={clientMisconfigured ? t("auth.misconfigured") : t("auth.localModeText")}>
       <Link to="/" className="pill-btn auth-submit">
-        Go home
+        {t("common.goHome")}
       </Link>
     </AuthCard>
   );
@@ -173,7 +170,8 @@ function consumeRedirectNextOnce(): string | null {
 const withNext = (path: string, next: string) => (next === "/" ? path : `${path}?next=${encodeURIComponent(next)}`);
 
 export function LoginPage() {
-  useDocumentTitle("Sign in");
+  const t = useT();
+  useDocumentTitle(t("auth.docSignIn"));
   const { signIn, redirectError, clearRedirectError, notice, setNotice } = useAuth();
   const { ready, signedInRedirect, next } = useAuthGate();
   const [email, setEmail] = useState("");
@@ -206,32 +204,32 @@ export function LoginPage() {
   };
 
   return (
-    <AuthCard title="Welcome back" subtitle="Sign in to keep your favourites, playlists and history in sync.">
+    <AuthCard title={t("auth.welcomeBack")} subtitle={t("auth.welcomeSub")}>
       {notice && (
         <p className="auth-notice" role="status">
-          {notice}
+          {t(notice)}
         </p>
       )}
       <GoogleButton next={next} onError={setError} disabled={busy} />
       <div className="auth-divider">
-        <span>or with email</span>
+        <span>{t("auth.orEmail")}</span>
       </div>
       <form className="auth-form" onSubmit={onSubmit} noValidate={false}>
-        <Field label="Email" icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
-        <Field label="Password" icon={<Lock size={16} />} type="password" value={password} onChange={setPassword} autoComplete="current-password" />
+        <Field label={t("auth.email")} icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
+        <Field label={t("auth.password")} icon={<Lock size={16} />} type="password" value={password} onChange={setPassword} autoComplete="current-password" />
         <div className="auth-row-end">
           <Link to={withNext("/reset-password", next)} className="link-btn">
-            Forgot password?
+            {t("auth.forgot")}
           </Link>
         </div>
         <FormError message={error} />
         <button type="submit" className="pill-btn auth-submit" disabled={busy}>
           {busy && <Loader2 size={16} className="spin" aria-hidden="true" />}
-          Sign in
+          {t("auth.signIn")}
         </button>
       </form>
       <p className="auth-switch">
-        New to MuiFy? <Link to={withNext("/signup", next)}>Create an account</Link>
+        {t("auth.newHere")} <Link to={withNext("/signup", next)}>{t("auth.createAccount")}</Link>
       </p>
     </AuthCard>
   );
@@ -256,7 +254,8 @@ export function StrengthMeter({ password, id }: { password: string; id: string }
 }
 
 export function SignupPage() {
-  useDocumentTitle("Create account");
+  const t = useT();
+  useDocumentTitle(t("auth.docSignup"));
   const { signUp } = useAuth();
   const { ready, signedInRedirect, next } = useAuthGate();
   const navigate = useNavigate();
@@ -275,9 +274,9 @@ export function SignupPage() {
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!name.trim()) return setError("Please enter a display name.");
-    if (password.length < 8) return setError("Use at least 8 characters for your password.");
-    if (password !== confirm) return setError("The passwords don't match.");
+    if (!name.trim()) return setError(t("auth.err.name"));
+    if (password.length < 8) return setError(t("auth.err.short"));
+    if (password !== confirm) return setError(t("auth.err.mismatch"));
     setBusy(true);
     try {
       await signUp(name, email, password);
@@ -289,16 +288,16 @@ export function SignupPage() {
   };
 
   return (
-    <AuthCard title="Create your account" subtitle="Free forever. Save what you love and pick up where you left off.">
+    <AuthCard title={t("auth.signupTitle")} subtitle={t("auth.signupSub")}>
       <GoogleButton next={next} onError={setError} disabled={busy} />
       <div className="auth-divider">
-        <span>or with email</span>
+        <span>{t("auth.orEmail")}</span>
       </div>
       <form className="auth-form" onSubmit={onSubmit}>
-        <Field label="Display name" icon={<UserIcon size={16} />} value={name} onChange={setName} autoComplete="nickname" autoFocus />
-        <Field label="Email" icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" />
+        <Field label={t("auth.displayName")} icon={<UserIcon size={16} />} value={name} onChange={setName} autoComplete="nickname" autoFocus />
+        <Field label={t("auth.email")} icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" />
         <Field
-          label="Password"
+          label={t("auth.password")}
           icon={<Lock size={16} />}
           type="password"
           value={password}
@@ -308,7 +307,7 @@ export function SignupPage() {
         />
         <StrengthMeter password={password} id={strengthId} />
         <Field
-          label="Confirm password"
+          label={t("auth.confirmPassword")}
           icon={<Lock size={16} />}
           type="password"
           value={confirm}
@@ -316,22 +315,23 @@ export function SignupPage() {
           autoComplete="new-password"
           invalid={mismatch}
         />
-        {mismatch && <p className="field-hint is-warn">The passwords don't match yet.</p>}
+        {mismatch && <p className="field-hint is-warn">{t("auth.mismatchYet")}</p>}
         <FormError message={error} />
         <button type="submit" className="pill-btn auth-submit" disabled={busy}>
           {busy && <Loader2 size={16} className="spin" aria-hidden="true" />}
-          Create account
+          {t("auth.createButton")}
         </button>
       </form>
       <p className="auth-switch">
-        Already have an account? <Link to={withNext("/login", next)}>Sign in</Link>
+        {t("auth.haveAccount")} <Link to={withNext("/login", next)}>{t("auth.signIn")}</Link>
       </p>
     </AuthCard>
   );
 }
 
 export function ResetPasswordPage() {
-  useDocumentTitle("Reset password");
+  const t = useT();
+  useDocumentTitle(t("auth.docReset"));
   const { resetPassword } = useAuth();
   const { ready, signedInRedirect, next } = useAuthGate();
   const [email, setEmail] = useState("");
@@ -357,23 +357,23 @@ export function ResetPasswordPage() {
   };
 
   return (
-    <AuthCard title="Reset your password" subtitle="We'll email you a link to choose a new password.">
+    <AuthCard title={t("auth.resetTitle")} subtitle={t("auth.resetSub")}>
       {sent ? (
         <p className="auth-notice is-ok" role="status">
-          If an account exists for <strong>{email.trim()}</strong>, a reset link is on its way. Check your inbox (and spam folder).
+          <Trans k="auth.resetSent" values={{ email: <strong>{email.trim()}</strong> }} />
         </p>
       ) : (
         <form className="auth-form" onSubmit={onSubmit}>
-          <Field label="Email" icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
+          <Field label={t("auth.email")} icon={<Mail size={16} />} type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
           <FormError message={error} />
           <button type="submit" className="pill-btn auth-submit" disabled={busy}>
             {busy && <Loader2 size={16} className="spin" aria-hidden="true" />}
-            Send reset link
+            {t("auth.sendReset")}
           </button>
         </form>
       )}
       <p className="auth-switch">
-        <Link to={withNext("/login", next)}>Back to sign in</Link>
+        <Link to={withNext("/login", next)}>{t("auth.backToSignIn")}</Link>
       </p>
     </AuthCard>
   );
@@ -381,6 +381,7 @@ export function ResetPasswordPage() {
 
 /** Wraps routes that need an account: guests go to /login?next=… and come back afterwards. */
 export function RequireAuth({ children }: { children: ReactNode }) {
+  const t = useT();
   const { phase } = useAuth();
   const location = useLocation();
   const here = `${location.pathname}${location.search}`;
@@ -388,7 +389,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     return (
       <div className="empty-state" aria-busy="true">
         <Loader2 size={22} className="spin" aria-hidden="true" />
-        <p>Checking your session…</p>
+        <p>{t("common.checkingSession")}</p>
       </div>
     );
   }

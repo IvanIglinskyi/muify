@@ -1,13 +1,17 @@
-import { Check } from "lucide-react";
+import { Check, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { AlbumCard } from "../components/AlbumCard";
 import { Cover } from "../components/Cover";
 import { SectionHeader } from "../components/common";
 import { TrackTable } from "../components/TrackTable";
+import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
+import { genreName } from "../lib/names";
 import { useLibrary } from "../store/LibraryContext";
 import type { Genre } from "../types";
+import { searchPath } from "./SearchPage";
 import { useDebounced, useDocumentTitle, useShell } from "./shell";
 
 const RELEASES_LIMIT = 12;
@@ -19,7 +23,8 @@ interface Results {
 }
 
 export function ExplorePage() {
-  useDocumentTitle("Explore");
+  const t = useT();
+  useDocumentTitle(t("explore.title"));
   const { query } = useShell();
   const { tracks, albums, mergeAlbums, mergeTracks } = useLibrary();
   const [params, setParams] = useSearchParams();
@@ -38,7 +43,7 @@ export function ExplorePage() {
     api
       .getGenres(ctrl.signal)
       .then(setGenres)
-      .catch((e: Error) => e.name !== "AbortError" && setError(e.message));
+      .catch((e: Error) => e.name !== "AbortError" && setError(errorText(e)));
     return () => ctrl.abort();
   }, [reloadKey]);
 
@@ -57,7 +62,7 @@ export function ExplorePage() {
       .catch((e: Error) => {
         if (e.name === "AbortError") return;
         setStatus("error");
-        setError(e.message);
+        setError(errorText(e));
       });
     return () => ctrl.abort();
   }, [genreId, q, searching, reloadKey, mergeAlbums, mergeTracks]);
@@ -74,21 +79,33 @@ export function ExplorePage() {
   const trackList = (results?.trackIds ?? []).map((id) => tracks[id]).filter(Boolean);
   const activeGenre = genres.find((g) => g.id === genreId);
   const busy = status === "loading";
-  const scope = [activeGenre?.name, searching ? `“${q}”` : null].filter(Boolean).join(" · ");
+  const scope = [activeGenre ? genreName(activeGenre) : null, searching ? q : null].filter(Boolean).join(" · ");
 
   return (
     <div className="page explore">
       <div className="page-head">
-        <h1 className="page-title">Explore</h1>
+        <h1 className="page-title">{t("explore.title")}</h1>
         <p className="page-sub" role="status" aria-live="polite">
-          {status === "ready" && (scope ? `${albumList.length} albums and ${trackList.length} tracks for ${scope}` : "Find new music by genre and mood")}
+          {status === "ready" &&
+            (scope
+              ? t("explore.found", {
+                  albums: t("common.albumsCount", { count: albumList.length }),
+                  tracks: t("common.tracksCount", { count: trackList.length }),
+                  scope,
+                })
+              : t("explore.sub"))}
         </p>
+        {searching && (
+          <Link to={searchPath(q)} className="link-btn full-search-link">
+            <Search size={14} aria-hidden="true" /> {t("explore.fullSearch", { q })}
+          </Link>
+        )}
       </div>
 
       <section aria-labelledby="genres-title">
         <SectionHeader
-          title={<span id="genres-title">Genres &amp; moods</span>}
-          action={genreId ? "Clear filter" : undefined}
+          title={<span id="genres-title">{t("explore.genres")}</span>}
+          action={genreId ? t("explore.clearFilter") : undefined}
           onAction={() => selectGenre(null)}
         />
         <ul className="genre-grid">
@@ -101,11 +118,15 @@ export function ExplorePage() {
                   className={`genre-tile${active ? " is-active" : ""}`}
                   aria-pressed={active}
                   onClick={() => selectGenre(active ? null : g.id)}
-                  aria-label={`${g.name} (${g.kind}${g.trackCount === null ? "" : `, ${g.trackCount} tracks`})`}
+                  aria-label={
+                    g.trackCount === null
+                      ? t("explore.genreLabel", { name: genreName(g), kind: t(`genre.kind.${g.kind}`) })
+                      : t("explore.genreLabelCount", { name: genreName(g), kind: t(`genre.kind.${g.kind}`), count: g.trackCount })
+                  }
                 >
                   <Cover seed={`genre-${g.id}`} />
-                  <span className="genre-name">{g.name}</span>
-                  <span className="genre-kind">{g.kind === "mood" ? "Mood" : "Genre"}</span>
+                  <span className="genre-name">{genreName(g)}</span>
+                  <span className="genre-kind">{t(`genre.kind.${g.kind}`)}</span>
                   {active && (
                     <span className="genre-check" aria-hidden="true">
                       <Check size={14} strokeWidth={3} />
@@ -122,15 +143,15 @@ export function ExplorePage() {
 
       {status === "error" && (
         <div className="inline-error" role="alert">
-          <span>Could not load music: {error}</span>
+          <span>{t("explore.loadError", { error: error ?? "" })}</span>
           <button type="button" className="link-btn" onClick={() => setReloadKey((k) => k + 1)}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       )}
 
       <section aria-labelledby="releases-title" aria-busy={busy}>
-        <SectionHeader title={<span id="releases-title">{searching ? "Albums" : "New releases"}</span>} />
+        <SectionHeader title={<span id="releases-title">{searching ? t("explore.albums") : t("explore.newReleases")}</span>} />
         {albumList.length > 0 ? (
           <ul className={`album-row${busy ? " is-busy" : ""}`}>
             {albumList.map((a) => (
@@ -138,7 +159,7 @@ export function ExplorePage() {
             ))}
           </ul>
         ) : status === "ready" ? (
-          <p className="empty-inline">No albums found{scope ? ` for ${scope}` : ""}.</p>
+          <p className="empty-inline">{scope ? t("explore.noAlbumsFor", { scope }) : t("explore.noAlbums")}</p>
         ) : status === "loading" && !results ? (
           <ul className="album-row" aria-hidden="true">
             {Array.from({ length: 4 }, (_, i) => (
@@ -149,13 +170,13 @@ export function ExplorePage() {
       </section>
 
       <section className="card chart-panel" aria-labelledby="charts-title" aria-busy={busy}>
-        <SectionHeader title={<span id="charts-title">{searching ? "Tracks" : "Top charts"}</span>} />
+        <SectionHeader title={<span id="charts-title">{searching ? t("explore.tracks") : t("explore.topCharts")}</span>} />
         <div className={`chart-scroll${busy ? " is-busy" : ""}`}>
           <TrackTable
             tracks={trackList}
             showRank={!searching}
-            caption={searching ? "Matching tracks" : "Top charts"}
-            empty={status === "ready" ? <>No tracks found{scope ? ` for ${scope}` : ""}.</> : undefined}
+            caption={searching ? t("explore.matchingTracks") : t("explore.topCharts")}
+            empty={status === "ready" ? (scope ? t("explore.noTracksFor", { scope }) : t("explore.noTracks")) : undefined}
           />
         </div>
       </section>

@@ -3,13 +3,16 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { AlbumCard } from "../components/AlbumCard";
+import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { useLibrary } from "../store/LibraryContext";
 import { EmptyState } from "./LibraryPage";
 import { matchesQuery, useDocumentTitle, useShell } from "./shell";
 
 /** /albums/week — "See All" for Albums of the Week. */
 export function WeekAlbumsPage() {
-  useDocumentTitle("Albums of the Week");
+  const t = useT();
+  useDocumentTitle(t("week.title"));
   const { query } = useShell();
   const { albums, mergeAlbums } = useLibrary();
   const [ids, setIds] = useState<string[] | null>(null);
@@ -25,7 +28,7 @@ export function WeekAlbumsPage() {
         setIds(mergeAlbums(list));
         setError(null);
       })
-      .catch((e: Error) => !cancelled && setError(e.message));
+      .catch((e: Error) => !cancelled && setError(errorText(e)));
     return () => {
       cancelled = true;
     };
@@ -37,17 +40,17 @@ export function WeekAlbumsPage() {
   return (
     <div className="page">
       <Link to="/" className="back-link">
-        <ArrowLeft size={16} aria-hidden="true" /> Home
+        <ArrowLeft size={16} aria-hidden="true" /> {t("common.home")}
       </Link>
       <div className="page-head">
-        <h1 className="page-title">Albums of the Week</h1>
-        <p className="page-sub">{ids ? `${list.length} albums popular this week` : " "}</p>
+        <h1 className="page-title">{t("week.title")}</h1>
+        <p className="page-sub">{ids ? t("week.count", { count: list.length }) : " "}</p>
       </div>
       {error && (
         <div className="inline-error" role="alert">
-          <span>Could not load albums: {error}</span>
+          <span>{t("week.loadError", { error })}</span>
           <button type="button" className="link-btn" onClick={() => setReloadKey((k) => k + 1)}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       )}
@@ -64,7 +67,7 @@ export function WeekAlbumsPage() {
           ))}
         </ul>
       ) : ids ? (
-        <EmptyState icon={<Disc3 size={28} />} title={query.trim() ? `No albums match “${query.trim()}”` : "No albums this week"} />
+        <EmptyState icon={<Disc3 size={28} />} title={query.trim() ? t("week.noMatch", { q: query.trim() }) : t("week.none")} />
       ) : null}
     </div>
   );

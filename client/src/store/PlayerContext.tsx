@@ -9,6 +9,8 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { tt } from "../i18n/core";
+import { clampRate, sleepExpired, sleepFadeFactor, sleepRemainingMs, startSleepTimer, type SleepTimer } from "../lib/sleepTimer";
 import type { Track } from "../types";
 import { useAuth } from "./AuthContext";
 import { useLibrary } from "./LibraryContext";
@@ -50,6 +52,13 @@ interface PlayerApi {
   removeFromQueue: (id: string) => void;
   /** Removes every track after the current one. */
   clearUpNext: () => void;
+  /** Playback speed (0.75–1.5). */
+  rate: number;
+  setRate: (rate: number) => void;
+  /** Active sleep timer, or null. */
+  sleepTimer: SleepTimer | null;
+  /** Minutes (15/30/45/60), "end-of-track", or null to turn it off. */
+  setSleepTimer: (v: number | "end-of-track" | null) => void;
 }
 
 const PlayerContext = createContext<PlayerApi | null>(null);
@@ -62,6 +71,17 @@ const TICK_MS = 250;
 const PLAY_THRESHOLD_S = 10;
 /** While playing, the position is saved this often (plus on pause / track change / pagehide). */
 const SAVE_EVERY_MS = 15_000;
+/** Sleep timer / fade check interval. */
+const SLEEP_TICK_MS = 250;
+const RATE_KEY = "muify:rate";
+
+function storedRate(): number {
+  try {
+    return clampRate(Number(localStorage.getItem(RATE_KEY) ?? 1));
+  } catch {
+    return 1;
+  }
+}
 
 /** One continuous listen of one track, reported to /api/history. */
 interface ListenSession {
@@ -85,7 +105,7 @@ const validDuration = (d: number) => (Number.isFinite(d) && d > 0 ? d : null);
  * created once here (never rendered), so playback survives route changes.
  */
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { tracks, lastPlayback, lastPlaybackFor, notify, historyChanged } = useLibrary();
+  const { tracks, lastPlayback, lastPlaybackFor, notify, notifyInfo, historyChanged } = useLibrary();
   const { identityKey, canSave } = useAuth();
   /** Guests can listen, but nothing is reported or saved for them. */
   const canSaveRef = useRef(canSave);
@@ -106,6 +126,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [muted, setMuted] = useState(false);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<RepeatMode>("off");
+  const [rate, setRateState] = useState<number>(storedRate);
+  const [sleepTimer, setSleepTimerState] = useState<SleepTimer | null>(null);
 
   const current = currentId ? tracks[currentId] ?? null : null;
   const src = current?.audioUrl ?? null;
@@ -145,8 +167,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setPosition(Math.max(0, Math.min(lastPlayback.position, lastPlayback.track.duration - 1)));
   }, [currentId, lastPlayback, lastPlaybackFor, identityKey]);
 
-  const stateRef = useRef({ currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration });
-  stateRef.current = { currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration };
+  const stateRef = useRef({ currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration, rate, sleepTimer });
+  stateRef.current = { currentId, current, queue, shuffle, repeat, position, isPlaying, src, duration, rate, sleepTimer };
 
   /** Seek target to apply once the new source has metadata. */
   const pendingSeekRef = useRef<number | null>(null);
@@ -246,6 +268,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [isPlaying, buffering, currentId, closeSession, createEntry]);
 
+  /** Sleep timer ran out: pause (rewinding if the track just ended), restore the volume. */
+  const finishSleep = useCallback(
+    (trackEnded: boolean) => {
+      setSleepTimerState(null);
+      setIsPlaying(false);
+      if (trackEnded) {
+        closeSession(true);
+        setPosition(0);
+        if (stateRef.current.src) audio.currentTime = 0;
+      }
+      audio.volume = volumeRef.current;
+      notifyInfo(tt("sleep.done"));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [audio, closeSession, notifyInfo]
+  );
+
   /** Same track from the top (repeat-one, or a one-track queue with repeat-all). */
   const restart = useCallback(() => {
     closeSession(true);
@@ -319,7 +358,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [audio, src, isPlaying, playAudio]);
 
   useEffect(() => {
-    audio.volume = volume;
+    // (While a sleep timer fades out, its own effect scales the volume down.)
+    if (!stateRef.current.sleepTimer) audio.volume = volume;
     audio.muted = muted;
   }, [audio, volume, muted]);
 
@@ -327,7 +367,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const handlersRef = useRef({ ended: () => {}, error: () => {} });
   handlersRef.current = {
     ended: () => {
-      if (stateRef.current.repeat === "one") restart();
+      if (stateRef.current.sleepTimer?.kind === "end-of-track") finishSleep(true);
+      else if (stateRef.current.repeat === "one") restart();
       else step(1, true);
     },
     error: () => {
@@ -335,15 +376,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setBuffering(false);
       const { isPlaying: playing, current: track, queue: q } = stateRef.current;
       if (!playing) return; // preload failure: retried by playAudio() when the user presses play
-      const name = track ? `“${track.title}”` : "this track";
+      const title = track ? track.title : tt("player.err.thisTrack");
       errorStreakRef.current += 1;
       if (q.length <= 1 || errorStreakRef.current >= q.length) {
         errorStreakRef.current = 0;
         setIsPlaying(false);
-        notify(`Couldn't play ${name}. Check your connection and try again.`);
+        notify(tt("player.err.stop", { title }));
         return;
       }
-      notify(`Couldn't play ${name} — skipped to the next track.`);
+      notify(tt("player.err.skip", { title }));
       step(1, true);
     },
   };
@@ -406,15 +447,60 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isPlaying || src) return;
-    const timer = window.setInterval(() => setPosition((p) => p + TICK_MS / 1000), TICK_MS);
+    const timer = window.setInterval(() => setPosition((p) => p + (TICK_MS / 1000) * stateRef.current.rate), TICK_MS);
     return () => window.clearInterval(timer);
   }, [isPlaying, src]);
 
   useEffect(() => {
     if (src || !current || position < current.duration) return;
-    if (repeat === "one") restart();
+    if (stateRef.current.sleepTimer?.kind === "end-of-track") finishSleep(true);
+    else if (repeat === "one") restart();
     else step(1, true);
-  }, [position, current, src, repeat, step, restart]);
+  }, [position, current, src, repeat, step, restart, finishSleep]);
+
+  // ---- Playback speed ----
+  useEffect(() => {
+    audio.defaultPlaybackRate = rate; // survives source changes
+    audio.playbackRate = rate;
+  }, [audio, rate, src]);
+
+  const setRate = useCallback((r: number) => {
+    const v = clampRate(r);
+    setRateState(v);
+    try {
+      localStorage.setItem(RATE_KEY, String(v));
+    } catch {
+      /* private mode */
+    }
+  }, []);
+
+  // ---- Sleep timer: fade out over the last seconds, then pause ----
+  useEffect(() => {
+    if (!sleepTimer) {
+      audio.volume = volumeRef.current;
+      return;
+    }
+    const tick = () => {
+      const s = stateRef.current;
+      const now = Date.now();
+      if (sleepExpired(s.sleepTimer, now)) {
+        if (s.isPlaying) finishSleep(false);
+        else setSleepTimerState(null); // ran out while paused: nothing to stop
+        return;
+      }
+      const remaining = sleepRemainingMs(s.sleepTimer, now, { position: s.position, duration: s.duration, rate: s.rate });
+      audio.volume = volumeRef.current * sleepFadeFactor(remaining);
+    };
+    tick();
+    const t = window.setInterval(tick, SLEEP_TICK_MS);
+    return () => window.clearInterval(t);
+  }, [audio, sleepTimer, finishSleep]);
+
+  const setSleepTimer = useCallback((v: number | "end-of-track" | null) => {
+    if (v === null) setSleepTimerState(null);
+    else if (v === "end-of-track") setSleepTimerState({ kind: "end-of-track" });
+    else setSleepTimerState(startSleepTimer(v, Date.now()));
+  }, []);
 
   // ---- Controls ----
 
@@ -646,8 +732,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       addToQueue,
       removeFromQueue,
       clearUpNext,
+      rate,
+      setRate,
+      sleepTimer,
+      setSleepTimer,
     }),
-    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, seekBy, setVolume, toggleMute, toggleShuffle, cycleRepeat, playNext, addToQueue, removeFromQueue, clearUpNext]
+    [current, queue, isPlaying, duration, buffering, mode, volume, muted, shuffle, repeat, playTrack, togglePlay, next, prev, seek, seekBy, setVolume, toggleMute, toggleShuffle, cycleRepeat, playNext, addToQueue, removeFromQueue, clearUpNext, rate, setRate, sleepTimer, setSleepTimer]
   );
 
   return (

@@ -1,5 +1,6 @@
 import { Pause, Play } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { useT } from "../i18n";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
 import type { Album } from "../types";
@@ -18,6 +19,7 @@ export const albumPath = (id: string) => `/album/${encodeURIComponent(id)}`;
 
 /** Full-bleed album card (Albums of the Week style): the card opens the album page, the round button plays it. */
 export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
+  const t = useT();
   const { toggleAlbumLike } = useLibrary();
   const { current, isPlaying, playTrack, togglePlay } = usePlayer();
   const navigate = useNavigate();
@@ -33,17 +35,17 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
       className={`album-card${playing ? " is-playing" : ""}${showLike ? " has-like" : ""}${className ? ` ${className}` : ""}`}
     >
       <Cover seed={a.id} src={a.coverUrl} />
-      <Link to={albumPath(a.id)} className="album-card-hit" aria-label={`Open album ${a.title} by ${a.artist}`} />
+      <Link to={albumPath(a.id)} className="album-card-hit" aria-label={t("albumCard.open", { title: a.title, artist: a.artist })} />
       <Logo className="logo-xs" />
       <KebabMenu
         className="album-kebab"
-        label={`More options for ${a.title}`}
+        label={t("table.moreOptions", { title: a.title })}
         items={[
-          { label: "Open album", onSelect: () => navigate(albumPath(a.id)) },
-          ...(a.artistId ? [{ label: "Go to artist", onSelect: () => navigate(`/artist/${encodeURIComponent(a.artistId!)}`) }] : []),
-          { label: playing ? "Pause" : "Play album", onSelect: play, disabled: a.trackIds.length === 0 },
+          { label: t("menu.openAlbum"), onSelect: () => navigate(albumPath(a.id)) },
+          ...(a.artistId ? [{ label: t("menu.goToArtist"), onSelect: () => navigate(`/artist/${encodeURIComponent(a.artistId!)}`) }] : []),
+          { label: playing ? t("common.pause") : t("menu.playAlbum"), onSelect: play, disabled: a.trackIds.length === 0 },
           {
-            label: a.liked ? "Remove from favourites" : "Add to favourites",
+            label: a.liked ? t("menu.removeFavourite") : t("menu.addFavourite"),
             onSelect: () => toggleAlbumLike(a.id),
           },
         ]}
@@ -60,7 +62,7 @@ export function AlbumCard({ album: a, className, showLike }: AlbumCardProps) {
         className="play-circle album-card-play"
         onClick={play}
         disabled={a.trackIds.length === 0}
-        aria-label={playing ? `Pause ${a.title}` : `Play album ${a.title} by ${a.artist}`}
+        aria-label={playing ? t("albumCard.pause", { title: a.title }) : t("albumCard.play", { title: a.title, artist: a.artist })}
       >
         {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
       </button>

@@ -3,26 +3,33 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import {
+  addRecentSearch,
   addTrackToPlaylist,
   albumOfTheDay,
   allWeekAlbums,
   catalogStatus,
   clearHistory,
+  clearRecentSearches,
   computeStats,
   createPlaylist,
   dailyMix,
   deletePlaylist,
+  followArtist,
   getAlbum,
   getArtist,
+  getLyrics,
+  getNotifications,
   getPlaylist,
   getSharedPlaylist,
   lastPlayback,
   listAlbums,
   listeningStats,
   listGenres,
+  listFollows,
   listHistory,
   listPlaylists,
   listTracks,
+  markNotificationsRead,
   MAX_QUEUE,
   playlistTracks,
   recentTracks,
@@ -31,9 +38,11 @@ import {
   reorderPlaylist,
   reportPlay,
   savePlayback,
+  search,
   setAlbumLike,
   setTrackLike,
   sharePlaylist,
+  unfollowArtist,
   unsharePlaylist,
   updatePlaylist,
   upstreamAudioFor,
@@ -44,12 +53,20 @@ import {
 import { forgetTokensOf, requireMember, viewerDoc } from "./auth.js";
 import { findGenre } from "./data/genres.js";
 import { firebase } from "./firebase.js";
+import { accountLimiter, searchLimiter, securityHeaders, trustProxySetting, writeLimiter } from "./security.js";
+import { clientDistDir, clientRouter, shouldServeClient } from "./static.js";
 import { SHARE_ID_RE, userStore } from "./userStore.js";
-import type { AlbumSort, MeResponse, TrackSort } from "./types.js";
+import type { AlbumSort, Language, LyricsResponse, MeResponse, SearchType, TrackSort } from "./types.js";
 
 export const app = express();
 
-app.use(express.json({ limit: "100kb" }));
+app.disable("x-powered-by");
+// Behind a reverse proxy / load balancer set TRUST_PROXY (e.g. "1") so req.ip is the real client.
+app.set("trust proxy", trustProxySetting());
+app.use(securityHeaders());
+// JSON bodies are small (ids, names, positions): anything bigger is rejected with 413.
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT?.trim() || "100kb" }));
+app.use("/api", writeLimiter);
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>;
 
@@ -371,6 +388,148 @@ app.get(
   })
 );
 
+/** PUT /api/artists/:id/follow → { following: true, artist } (idempotent). */
+app.put(
+  "/api/artists/:id/follow",
+  handle(async (req, res) => {
+    if (!ARTIST_ID_RE.test(req.params.id)) {
+      res.status(400).json({ error: "Malformed artist id" });
+      return;
+    }
+    const m = await requireMember(req, res);
+    if (!m) return;
+    const artist = await followArtist(m.doc, req.params.id);
+    if (!artist) {
+      res.status(404).json({ error: "Artist not found" });
+      return;
+    }
+    res.json({ following: true, artist });
+  })
+);
+
+/** DELETE /api/artists/:id/follow → { following: false, artist: null } (idempotent). */
+app.delete(
+  "/api/artists/:id/follow",
+  handle(async (req, res) => {
+    if (!ARTIST_ID_RE.test(req.params.id)) {
+      res.status(400).json({ error: "Malformed artist id" });
+      return;
+    }
+    const m = await requireMember(req, res);
+    if (!m) return;
+    unfollowArtist(m.doc, req.params.id);
+    res.json({ following: false, artist: null });
+  })
+);
+
+/** GET /api/me/follows — followed artists, most recent first. */
+app.get(
+  "/api/me/follows",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.setHeader("cache-control", "no-store");
+    res.json(listFollows(m.doc));
+  })
+);
+
+// ---- Notifications ----
+/** GET /api/notifications — new releases of followed artists (looked up lazily, ≤ every 6 h). */
+app.get(
+  "/api/notifications",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.setHeader("cache-control", "no-store");
+    res.json(await getNotifications(m.doc));
+  })
+);
+
+const NOTIF_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+
+/** POST /api/notifications/read { ids: string[] } or { all: true } */
+app.post(
+  "/api/notifications/read",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    let ids: string[] | "all";
+    if (body.all === true) ids = "all";
+    else if (Array.isArray(body.ids) && body.ids.length <= 100 && body.ids.every((x) => typeof x === "string" && NOTIF_ID_RE.test(x))) {
+      ids = body.ids as string[];
+    } else {
+      res.status(400).json({ error: "Send `ids` (array of notification ids) or `all: true`" });
+      return;
+    }
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.json(markNotificationsRead(m.doc, ids));
+  })
+);
+
+// ---- Search ----
+const SEARCH_TYPES: readonly SearchType[] = ["all", "tracks", "albums", "artists", "playlists"];
+const MAX_QUERY = 100;
+
+/** GET /api/search?q=&type=all|tracks|albums|artists|playlists */
+app.get(
+  "/api/search",
+  searchLimiter,
+  handle(async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.replace(/\s+/g, " ").trim() : "";
+    if (!q || q.length > MAX_QUERY) {
+      res.status(400).json({ error: `\`q\` must be 1-${MAX_QUERY} characters` });
+      return;
+    }
+    const typeRaw = typeof req.query.type === "string" ? req.query.type : "all";
+    if (!(SEARCH_TYPES as readonly string[]).includes(typeRaw)) {
+      res.status(400).json({ error: `\`type\` must be one of: ${SEARCH_TYPES.join(", ")}` });
+      return;
+    }
+    res.setHeader("cache-control", "private, no-cache");
+    res.json(await search(q, typeRaw as SearchType, await viewerDoc(req)));
+  })
+);
+
+/** GET /api/me/searches — recent searches, newest first. */
+app.get(
+  "/api/me/searches",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.setHeader("cache-control", "no-store");
+    res.json(m.doc.state.searches);
+  })
+);
+
+/** POST /api/me/searches { q } → the updated list. */
+app.post(
+  "/api/me/searches",
+  handle(async (req, res) => {
+    const body = requireBody(req, res);
+    if (!body) return;
+    const q = typeof body.q === "string" ? body.q.replace(/\s+/g, " ").trim() : "";
+    if (!q || q.length > MAX_QUERY) {
+      res.status(400).json({ error: `\`q\` must be 1-${MAX_QUERY} characters` });
+      return;
+    }
+    const m = await requireMember(req, res);
+    if (!m) return;
+    res.json(addRecentSearch(m.doc, q));
+  })
+);
+
+/** DELETE /api/me/searches[?q=] — clears all (or one) recent searches. */
+app.delete(
+  "/api/me/searches",
+  handle(async (req, res) => {
+    const m = await requireMember(req, res);
+    if (!m) return;
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    res.json(clearRecentSearches(m.doc, q || undefined));
+  })
+);
+
 // ---- Recommendations ----
 app.get(
   "/api/recommendations",
@@ -470,6 +629,25 @@ app.patch(
       return;
     }
     res.json(track);
+  })
+);
+
+/** GET /api/tracks/:id/lyrics → { trackId, lyrics: string | null } (404 for unknown tracks). */
+app.get(
+  "/api/tracks/:id/lyrics",
+  handle(async (req, res) => {
+    if (!ID_RE.test(req.params.id)) {
+      res.status(400).json({ error: "Malformed track id" });
+      return;
+    }
+    const lyrics = await getLyrics(req.params.id);
+    if (lyrics === undefined) {
+      res.status(404).json({ error: "Track not found" });
+      return;
+    }
+    res.setHeader("cache-control", "private, max-age=3600");
+    const body: LyricsResponse = { trackId: req.params.id, lyrics };
+    res.json(body);
   })
 );
 
@@ -665,6 +843,7 @@ async function meOf(m: NonNullable<Awaited<ReturnType<typeof requireMember>>>): 
       usePhoto: false,
       providers: [],
       createdAt: p?.createdAt ?? null,
+      language: p?.language ?? null,
     };
   }
   const fb = await firebase();
@@ -680,6 +859,7 @@ async function meOf(m: NonNullable<Awaited<ReturnType<typeof requireMember>>>): 
     usePhoto: p?.usePhoto ?? true,
     providers: u.providers,
     createdAt: u.createdAt ?? p?.createdAt ?? null,
+    language: p?.language ?? null,
   };
 }
 
@@ -693,13 +873,13 @@ app.get(
   })
 );
 
-/** PATCH /api/me { displayName?, accentColor?, usePhoto? } */
+/** PATCH /api/me { displayName?, accentColor?, usePhoto?, language? } */
 app.patch(
   "/api/me",
   handle(async (req, res) => {
     const body = requireBody(req, res);
     if (!body) return;
-    const changes: { displayName?: string; accentColor?: string | null; usePhoto?: boolean } = {};
+    const changes: { displayName?: string; accentColor?: string | null; usePhoto?: boolean; language?: Language | null } = {};
     if (body.displayName !== undefined) {
       const name = typeof body.displayName === "string" ? body.displayName.replace(/\s+/g, " ").trim() : "";
       if (!name || name.length > MAX_DISPLAY_NAME) {
@@ -722,6 +902,13 @@ app.patch(
       }
       changes.usePhoto = body.usePhoto;
     }
+    if (body.language !== undefined) {
+      if (body.language !== null && body.language !== "uk" && body.language !== "en") {
+        res.status(400).json({ error: "`language` must be \"uk\", \"en\" or null" });
+        return;
+      }
+      changes.language = body.language;
+    }
     const m = await requireMember(req, res);
     if (!m) return;
     if (m.identity.kind === "user" && changes.displayName !== undefined) {
@@ -735,6 +922,7 @@ app.patch(
 /** Signs the account out everywhere: refresh tokens are revoked, current ID tokens rejected. */
 app.post(
   "/api/me/revoke-sessions",
+  accountLimiter,
   handle(async (req, res) => {
     const m = await requireMember(req, res);
     if (!m) return;
@@ -751,6 +939,7 @@ app.post(
 /** GET /api/me/export — everything stored for the caller, as a JSON download. */
 app.get(
   "/api/me/export",
+  accountLimiter,
   handle(async (req, res) => {
     const m = await requireMember(req, res);
     if (!m) return;
@@ -771,6 +960,7 @@ app.get(
  */
 app.delete(
   "/api/me",
+  accountLimiter,
   handle(async (req, res) => {
     const m = await requireMember(req, res);
     if (!m) return;
@@ -793,6 +983,11 @@ app.delete(
 app.use("/api", (_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
+
+// Production: the built client on the same port (see static.ts).
+if (shouldServeClient()) {
+  app.use(clientRouter(clientDistDir()));
+}
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {

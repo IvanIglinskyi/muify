@@ -1,5 +1,6 @@
 import { Pause, Play } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useT } from "../i18n";
 import { formatLongDuration } from "../lib/format";
 import { useLibrary } from "../store/LibraryContext";
 import { usePlayer } from "../store/PlayerContext";
@@ -22,6 +23,7 @@ function wavePath(width: number, midY: number, amp: number, half: number): strin
 }
 
 export function AlbumOfTheDay() {
+  const t = useT();
   const { albumOfTheDay: album, toggleAlbumLike } = useLibrary();
   const { current, isPlaying, playTrack, togglePlay } = usePlayer();
 
@@ -49,9 +51,9 @@ export function AlbumOfTheDay() {
 
       <div className="album-day-head">
         <div>
-          <h2 id="aotd-title" className="album-day-heading">Album of the day</h2>
+          <h2 id="aotd-title" className="album-day-heading">{t("aotd.title")}</h2>
           <p className="meta">
-            {album.trackCount} Tracks&nbsp;&nbsp;{formatLongDuration(album.duration)}
+            {t("common.tracksMeta", { count: album.trackCount })}&nbsp;&nbsp;{formatLongDuration(album.duration)}
           </p>
         </div>
         <Logo className="logo-sm" />
@@ -60,12 +62,12 @@ export function AlbumOfTheDay() {
       <div className="album-day-cover">
         <Cover seed={album.id} src={album.coverUrl} />
         {/* The cover opens the album; the round button on top of it plays. */}
-        <Link to={albumPath(album.id)} className="album-day-cover-link" aria-label={`Open album ${album.title}`} />
+        <Link to={albumPath(album.id)} className="album-day-cover-link" aria-label={t("aotd.open", { title: album.title })} />
         <button
           type="button"
           className="play-circle"
           onClick={onPlay}
-          aria-label={isThisPlaying ? `Pause ${album.title}` : `Play ${album.title}`}
+          aria-label={t(isThisPlaying ? "aotd.pause" : "aotd.play", { title: album.title })}
         >
           {isThisPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
         </button>

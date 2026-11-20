@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../i18n";
 
 export function Logo({ className }: { className?: string }) {
   return <span className={className ? `logo ${className}` : "logo"}>Muify</span>;
@@ -24,11 +25,12 @@ interface HeartButtonProps {
 }
 
 export function HeartButton({ liked, onToggle, label, size = 20, className }: HeartButtonProps) {
+  const t = useT();
   return (
     <button
       type="button"
       className={`icon-btn heart-btn${liked ? " is-liked" : ""}${className ? ` ${className}` : ""}`}
-      aria-label={liked ? `Remove ${label} from favourites` : `Add ${label} to favourites`}
+      aria-label={t(liked ? "heart.remove" : "heart.add", { name: label })}
       aria-pressed={liked}
       onClick={(e) => {
         e.stopPropagation();

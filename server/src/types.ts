@@ -28,6 +28,8 @@ export interface Track {
   albumId?: string;
   /** Artist page id ("jr123" Jamendo, "sa-name" seed); absent on old snapshots. */
   artistId?: string;
+  /** Jamendo has lyrics for this track (true), has none (false), or unknown (absent). */
+  hasLyrics?: boolean;
 }
 
 export type CatalogSource = "jamendo" | "seed";
@@ -148,7 +150,79 @@ export interface ArtistDetails extends Artist {
   topTracks: Track[];
   /** Newest first. */
   albums: AlbumWithTracks[];
+  /** The caller follows this artist (always false for guests). */
+  following: boolean;
 }
+
+/** GET /api/me/follows — an artist the caller follows. */
+export interface FollowedArtist {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  source: CatalogSource;
+  /** ISO timestamp of the follow. */
+  followedAt: string;
+}
+
+/** PUT/DELETE /api/artists/:id/follow */
+export interface FollowResponse {
+  following: boolean;
+  artist: FollowedArtist | null;
+}
+
+export type NotificationKind = "release" | "welcome";
+
+/**
+ * One notification. The text is NOT stored: the client renders it in the listener's language from
+ * `kind` + the data fields.
+ */
+export interface AppNotification {
+  id: string;
+  kind: NotificationKind;
+  /** ISO timestamp the notification was created. */
+  createdAt: string;
+  read: boolean;
+  /** "release": the new album. */
+  albumId?: string;
+  albumTitle?: string;
+  artistId?: string;
+  artistName?: string;
+  coverUrl?: string;
+  /** "release": album release date (YYYY-MM-DD). */
+  releaseDate?: string;
+  /** Synthesised from the demo catalogue (seed mode) rather than a real new release. */
+  demo?: boolean;
+}
+
+/** GET /api/notifications */
+export interface NotificationsResponse {
+  items: AppNotification[];
+  unread: number;
+  /** When new releases were last looked up (ISO), or null. */
+  checkedAt: string | null;
+}
+
+export type SearchType = "all" | "tracks" | "albums" | "artists" | "playlists";
+
+/** GET /api/search?q=&type= */
+export interface SearchResults {
+  q: string;
+  type: SearchType;
+  tracks: Track[];
+  albums: AlbumWithTracks[];
+  artists: Artist[];
+  /** The caller's own playlists whose name matches (empty for guests). */
+  playlists: Playlist[];
+}
+
+/** GET /api/tracks/:id/lyrics */
+export interface LyricsResponse {
+  trackId: string;
+  /** Plain text (line breaks kept), or null when Jamendo has none. */
+  lyrics: string | null;
+}
+
+export type Language = "uk" | "en";
 
 /** GET /api/recommendations */
 export interface Recommendations {
@@ -250,6 +324,8 @@ export interface MeResponse {
   /** Linked sign-in providers ("password", "google.com"). */
   providers: string[];
   createdAt: string | null;
+  /** UI language chosen by the listener, or null (browser default). */
+  language: Language | null;
 }
 
 /** PATCH /api/me */
@@ -257,6 +333,7 @@ export interface UpdateMeBody {
   displayName?: string;
   accentColor?: string | null;
   usePhoto?: boolean;
+  language?: Language | null;
 }
 
 /** GET /api/stats — the Home statistics tiles, computed from the caller's own data. */

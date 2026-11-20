@@ -5,9 +5,11 @@ import { ArtistLink, artistPath } from "./ArtistLink";
 import { Cover } from "./Cover";
 import { HeartButton } from "./common";
 import { Link } from "react-router-dom";
+import { Trans, useT } from "../i18n";
 
 /** "Because you liked <artist>" — a horizontal row of track tiles (signed-in listeners with enough data). */
 export function BecauseYouLiked() {
+  const t = useT();
   const { because, tracks, toggleTrackLike } = useLibrary();
   const { current, isPlaying, playTrack, togglePlay } = usePlayer();
   if (!because) return null;
@@ -20,38 +22,42 @@ export function BecauseYouLiked() {
     <section className="because" aria-labelledby="because-title">
       <div className="section-header">
         <h2 id="because-title" className="section-title">
-          Because you liked{" "}
-          {artist.id ? (
-            <Link to={artistPath(artist.id)} className="because-artist">
-              {artist.name}
-            </Link>
-          ) : (
-            <span className="because-artist">{artist.name}</span>
-          )}
+          <Trans
+            k="because.title"
+            values={{
+              artist: artist.id ? (
+                <Link to={artistPath(artist.id)} className="because-artist">
+                  {artist.name}
+                </Link>
+              ) : (
+                <span className="because-artist">{artist.name}</span>
+              ),
+            }}
+          />
         </h2>
       </div>
       <ul className="track-tiles">
-        {list.map((t) => {
-          const isCurrent = current?.id === t.id;
+        {list.map((tr) => {
+          const isCurrent = current?.id === tr.id;
           const playing = isCurrent && isPlaying;
           return (
-            <li key={t.id} className={`track-tile${isCurrent ? " is-current" : ""}`}>
+            <li key={tr.id} className={`track-tile${isCurrent ? " is-current" : ""}`}>
               <span className="track-tile-art">
-                <Cover seed={t.id} src={t.coverUrl} />
+                <Cover seed={tr.id} src={tr.coverUrl} />
                 <button
                   type="button"
                   className="play-circle track-tile-play"
-                  onClick={() => (isCurrent ? togglePlay() : playTrack(t.id, ids))}
-                  aria-label={`${playing ? "Pause" : "Play"} ${t.title} by ${t.artist}`}
+                  onClick={() => (isCurrent ? togglePlay() : playTrack(tr.id, ids))}
+                  aria-label={t(playing ? "table.pauseTrack" : "table.playTrack", { title: tr.title, artist: tr.artist })}
                 >
                   {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
                 </button>
-                <HeartButton className="track-tile-like" liked={t.liked} label={t.title} size={18} onToggle={() => toggleTrackLike(t.id)} />
+                <HeartButton className="track-tile-like" liked={tr.liked} label={tr.title} size={18} onToggle={() => toggleTrackLike(tr.id)} />
               </span>
-              <span className="track-title" title={t.title}>
-                {t.title}
+              <span className="track-title" title={tr.title}>
+                {tr.title}
               </span>
-              <ArtistLink className="track-artist" name={t.artist} id={t.artistId} />
+              <ArtistLink className="track-artist" name={tr.artist} id={tr.artistId} />
             </li>
           );
         })}
